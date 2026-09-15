@@ -1,0 +1,15 @@
+.env
+apps/api/.env
+apps/worker/.env
+apps/worker/profiles/
+node_modules/
+apps/*/node_modules/
+apps/web/dist/
+.run/
+*.pid
+logs/
+.idea/
+.DS_Store
+*.zip
+playwright-report/
+test-results/

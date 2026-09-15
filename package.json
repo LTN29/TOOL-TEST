@@ -1,0 +1,27 @@
+{
+  "name": "simi-fb-comment-orchestrator",
+  "private": true,
+  "version": "2.1.1",
+  "scripts": {
+    "predev": "node scripts/sync-env.mjs",
+    "prestart": "node scripts/sync-env.mjs && npm run build",
+    "start": "concurrently --kill-others-on-fail --names API,WEB,WORKER --prefix-colors blue,green,magenta \"npm --prefix apps/api start\" \"npm --prefix apps/web run preview\" \"npm --prefix apps/worker start\"",
+    "dev": "concurrently --kill-others-on-fail --names API,WEB,WORKER --prefix-colors blue,green,magenta \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
+    "dev:api": "npm --prefix apps/api run dev",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:worker": "npm --prefix apps/worker start",
+    "build": "npm --prefix apps/web run build",
+    "check": "node scripts/check-project.mjs && node --check apps/api/src/server.js && node --check apps/worker/src/server.js && node --check apps/worker/src/login.js",
+    "install:all": "npm install && npm --prefix apps/api install && npm --prefix apps/web install && npm --prefix apps/worker install",
+    "playwright:install": "npm --prefix apps/worker exec playwright install chromium",
+    "db:setup": "node scripts/setup-db.mjs",
+    "services:start": "docker compose -f docker-compose.n8n.yml up -d mysql n8n",
+    "mysql:start": "docker compose -f docker-compose.n8n.yml up -d mysql",
+    "n8n:start": "docker compose -f docker-compose.n8n.yml up -d mysql n8n",
+    "n8n:stop": "docker compose -f docker-compose.n8n.yml down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "wait-on": "^8.0.4"
+  }
+}

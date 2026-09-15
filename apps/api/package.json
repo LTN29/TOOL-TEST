@@ -1,0 +1,12 @@
+{
+  "name": "simi-fb-comment-api-v2",
+  "private": true,
+  "type": "module",
+  "scripts": {"start":"node src/server.js","dev":"node --watch src/server.js"},
+  "dependencies": {
+    "dotenv":"^16.4.5",
+    "express":"^5.1.0",
+    "mysql2":"^3.14.3",
+    "uuid":"^11.1.0"
+  }
+}

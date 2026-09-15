@@ -1,0 +1,191 @@
+{
+  "name": "02 FB Manual Dispatcher",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fb-comment-now",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "manual-webhook",
+      "name": "Manual Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "fb-comment-now"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:4300/api/automation/manual",
+        "options": {},
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ postId: $json.body.postId, accountId: $json.body.accountId }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-automation-token",
+              "value": "={{ $env.AUTOMATION_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "make-due",
+      "name": "Make Job Due",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        230,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:4300/api/automation/claim-job/{{$json.jobId}}",
+        "options": {},
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "{}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-automation-token",
+              "value": "={{ $env.AUTOMATION_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "claim-manual",
+      "name": "Claim Manual Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Claim Manual Job').item.json.workerUrl + '/execute' }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ runId: $('Claim Manual Job').item.json.runId, profileKey: $('Claim Manual Job').item.json.profile_key, postUrl: $('Claim Manual Job').item.json.post_url, commentText: $('Claim Manual Job').item.json.comment_text, dryRun: $('Claim Manual Job').item.json.dry_run }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-automation-token",
+              "value": "={{ $env.AUTOMATION_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "manual-worker",
+      "name": "Browser Worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        710,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:4300/api/automation/jobs/{{$('Claim Manual Job').item.json.runId}}/result",
+        "options": {},
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ ok: !!$json.ok, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: false }) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-automation-token",
+              "value": "={{ $env.AUTOMATION_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "manual-save",
+      "name": "Save Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        950,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Webhook": {
+      "main": [
+        [
+          {
+            "node": "Make Job Due",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make Job Due": {
+      "main": [
+        [
+          {
+            "node": "Claim Manual Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim Manual Job": {
+      "main": [
+        [
+          {
+            "node": "Browser Worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Browser Worker": {
+      "main": [
+        [
+          {
+            "node": "Save Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
