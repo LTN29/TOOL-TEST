@@ -117,7 +117,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ ok: !!$json.ok, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: false }) }}",
+        "body": "={{ JSON.stringify({ ok: !!$json.ok, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: !!$json.dryRun }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

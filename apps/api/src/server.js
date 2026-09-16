@@ -292,10 +292,13 @@ app.post('/api/automation/manual', async (req,res) => {
 app.post('/api/automation/run-now', async (req,res) => {
   const {postId,accountId}=req.body;
   if(!postId||!accountId) return err(res,400,'postId and accountId are required');
-  const [[job]]=await pool.query('SELECT id,status FROM comment_jobs WHERE post_id=? AND account_id=?',[n(postId),n(accountId)]);
+  const [[job]]=await pool.query('SELECT id,status,dry_run FROM comment_jobs WHERE post_id=? AND account_id=?',[n(postId),n(accountId)]);
   if(!job) return err(res,404,'Không tìm thấy lượt bình luận');
-  if(job.status==='SUCCESS') return err(res,409,'Tài khoản này đã hoàn thành bài viết');
+  if(job.status==='SUCCESS'&&!job.dry_run) return err(res,409,'Tài khoản này đã hoàn thành bài viết');
   if(job.status==='RUNNING') return err(res,409,'Lượt bình luận đang được xử lý');
+  if(job.dry_run&&['SUCCESS','SKIPPED','FAILED'].includes(job.status)) {
+    await pool.query("UPDATE comment_jobs SET status='PENDING',scheduled_at=NOW(),attempt_count=0,retry_after=NULL,error_code=NULL,error_message=NULL WHERE id=?",[job.id]);
+  }
   const apiHeaders={'Content-Type':'application/json',...(automationToken?{'x-automation-token':automationToken}:{})};
   const apiBase=`http://127.0.0.1:${n(process.env.PORT,4300)}`;
   const claimResponse=await fetch(`${apiBase}/api/automation/claim-job/${job.id}`,{method:'POST',headers:apiHeaders,body:'{}'});
@@ -315,7 +318,7 @@ app.post('/api/automation/run-now', async (req,res) => {
   }
   const resultResponse=await fetch(`${apiBase}/api/automation/jobs/${job.id}/result`,{
     method:'POST',headers:apiHeaders,
-    body:JSON.stringify({ok:!!workerResult.ok,errorCode:workerResult.errorCode||null,errorMessage:workerResult.error||null})
+    body:JSON.stringify({ok:!!workerResult.ok,skipped:!!workerResult.dryRun,errorCode:workerResult.errorCode||null,errorMessage:workerResult.error||null})
   });
   if(!resultResponse.ok) return err(res,500,'Worker đã chạy nhưng không lưu được kết quả');
   if(!workerResult.ok) return res.status(502).json({error:workerResult.error||'Trình điều khiển Facebook báo lỗi',errorCode:workerResult.errorCode||'UNKNOWN_ERROR',jobId:job.id});
@@ -416,6 +419,11 @@ app.post('/api/automation/jobs/:id/result', async (req,res) => {
 
 app.post('/api/jobs/:id/action', async (req,res) => {
   const action=String(req.body.action||'');
+  if(action==='test-again'){
+    const [r]=await pool.query("UPDATE comment_jobs SET status='PENDING',scheduled_at=NOW(),attempt_count=0,retry_after=NULL,error_code=NULL,error_message=NULL WHERE id=? AND dry_run=1 AND status IN ('SUCCESS','SKIPPED','FAILED')",[req.params.id]);
+    if(!r.affectedRows) return err(res,409,'Chỉ có thể chạy lại lượt thử nghiệm đã hoàn tất hoặc bị lỗi');
+    return res.json({ok:true,status:'PENDING'});
+  }
   const transitions={
     pause:{from:['PENDING','RETRY_DUE'],status:'PAUSED'},
     cancel:{from:['PENDING','RETRY_DUE','PAUSED','FAILED'],status:'CANCELLED'},

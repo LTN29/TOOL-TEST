@@ -14,6 +14,7 @@ const defaultDryRun=String(process.env.DRY_RUN??'true').toLowerCase()!=='false';
 const headless=String(process.env.HEADLESS??'false').toLowerCase()==='true';
 const navTimeout=Number(process.env.NAV_TIMEOUT_MS||45000);
 const actionDelay=Number(process.env.ACTION_DELAY_MS||1200);
+const dryRunHoldMs=Number(process.env.DRY_RUN_HOLD_MS||8000);
 const workerName=process.env.WORKER_NAME||'local-worker';
 const automationToken=String(process.env.AUTOMATION_TOKEN||'').trim();
 const busyProfiles=new Set();
@@ -95,6 +96,9 @@ app.post('/execute',async(req,res)=>{
     if(pageStatus==='SESSION_EXPIRED') throw new Error('Facebook session expired or login required');
 
     const selectors=[
+      'div[role="dialog"] [aria-label*="bình luận" i][contenteditable="true"]',
+      'div[role="dialog"] [aria-label*="comment" i][contenteditable="true"]',
+      'div[role="dialog"] div[role="textbox"][contenteditable="true"]',
       '[aria-label*="bình luận" i][contenteditable="true"]',
       '[aria-label*="comment" i][contenteditable="true"]',
       'div[role="textbox"][contenteditable="true"]'
@@ -108,9 +112,14 @@ app.post('/execute',async(req,res)=>{
     await box.scrollIntoViewIfNeeded();
     await box.click();
     await page.waitForTimeout(250);
-    await box.fill(commentText);
+    await page.keyboard.insertText(commentText);
+    await page.waitForTimeout(700);
+    const typedText=String(await box.textContent().catch(()=>'' )).replace(/\s+/g,' ').trim();
+    const expected=String(commentText).replace(/\s+/g,' ').trim();
+    if(!typedText.includes(expected)) throw new Error('Comment box verification failed after typing');
     if(effectiveDryRun){
-      return res.json({ok:true,dryRun:true,workerName,message:'Typed only; not submitted'});
+      await page.waitForTimeout(Math.max(1500,dryRunHoldMs));
+      return res.json({ok:true,dryRun:true,workerName,message:'Typed and verified; not submitted'});
     }
     await page.keyboard.press('Enter');
     await page.waitForTimeout(Math.max(1500,actionDelay));
