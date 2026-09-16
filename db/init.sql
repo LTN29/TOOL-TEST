@@ -126,5 +126,5 @@ SELECT 'Sale Demo', 1, 180, 8, 1
 WHERE NOT EXISTS (SELECT 1 FROM campaigns WHERE name='Sale Demo');
 
 INSERT INTO worker_nodes (name, base_url, is_enabled)
-SELECT 'local-worker', 'http://host.docker.internal:4311', 1
+SELECT 'local-worker', 'http://127.0.0.1:4311', 1
 WHERE NOT EXISTS (SELECT 1 FROM worker_nodes WHERE name='local-worker');

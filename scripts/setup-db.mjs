@@ -21,6 +21,7 @@ try{
     await connection.query(`GRANT ALL PRIVILEGES ON ${connection.escapeId(database)}.* TO ${connection.escapeId(user)}@${connection.escape(host)}`);
   }
   await connection.query(fs.readFileSync(path.join(root,'db/migrations/001_queue_controls.sql'),'utf8'));
+  await connection.query("UPDATE worker_nodes SET base_url='http://127.0.0.1:4311' WHERE name='local-worker' AND base_url='http://host.docker.internal:4311'");
   await connection.query('FLUSH PRIVILEGES');
   console.log(`Database ${database} và quyền cho user ${user} đã sẵn sàng.`);
 } finally { await connection.end(); }
