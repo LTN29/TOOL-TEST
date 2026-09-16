@@ -289,6 +289,39 @@ app.post('/api/automation/manual', async (req,res) => {
   res.json({ok:true,jobId:j.id});
 });
 
+app.post('/api/automation/run-now', async (req,res) => {
+  const {postId,accountId}=req.body;
+  if(!postId||!accountId) return err(res,400,'postId and accountId are required');
+  const [[job]]=await pool.query('SELECT id,status FROM comment_jobs WHERE post_id=? AND account_id=?',[n(postId),n(accountId)]);
+  if(!job) return err(res,404,'Không tìm thấy lượt bình luận');
+  if(job.status==='SUCCESS') return err(res,409,'Tài khoản này đã hoàn thành bài viết');
+  if(job.status==='RUNNING') return err(res,409,'Lượt bình luận đang được xử lý');
+  const apiHeaders={'Content-Type':'application/json',...(automationToken?{'x-automation-token':automationToken}:{})};
+  const apiBase=`http://127.0.0.1:${n(process.env.PORT,4300)}`;
+  const claimResponse=await fetch(`${apiBase}/api/automation/claim-job/${job.id}`,{method:'POST',headers:apiHeaders,body:'{}'});
+  const claimed=await claimResponse.json().catch(()=>({}));
+  if(!claimResponse.ok) return err(res,claimResponse.status,claimed.error||'Không thể nhận lượt bình luận');
+
+  let workerResult;
+  try {
+    const workerResponse=await fetch(`${claimed.workerUrl.replace(/\/$/,'')}/execute`,{
+      method:'POST',headers:apiHeaders,
+      body:JSON.stringify({runId:claimed.runId,profileKey:claimed.profile_key,postUrl:claimed.post_url,commentText:claimed.comment_text,dryRun:claimed.dry_run})
+    });
+    workerResult=await workerResponse.json().catch(()=>({ok:false,errorCode:'UNKNOWN_ERROR',error:`Worker HTTP ${workerResponse.status}`}));
+    if(!workerResponse.ok&&workerResult.ok!==false) workerResult={ok:false,errorCode:'UNKNOWN_ERROR',error:`Worker HTTP ${workerResponse.status}`};
+  } catch(e) {
+    workerResult={ok:false,errorCode:/timeout/i.test(String(e.message||e))?'TIMEOUT':'NETWORK_ERROR',error:String(e.message||e)};
+  }
+  const resultResponse=await fetch(`${apiBase}/api/automation/jobs/${job.id}/result`,{
+    method:'POST',headers:apiHeaders,
+    body:JSON.stringify({ok:!!workerResult.ok,errorCode:workerResult.errorCode||null,errorMessage:workerResult.error||null})
+  });
+  if(!resultResponse.ok) return err(res,500,'Worker đã chạy nhưng không lưu được kết quả');
+  if(!workerResult.ok) return res.status(502).json({error:workerResult.error||'Trình điều khiển Facebook báo lỗi',errorCode:workerResult.errorCode||'UNKNOWN_ERROR',jobId:job.id});
+  res.json({ok:true,jobId:job.id,dryRun:!!workerResult.dryRun,message:workerResult.message||'Đã thực hiện'});
+});
+
 
 app.post('/api/automation/session-check', async (_req,res) => {
   const [workers]=await pool.query("SELECT * FROM worker_nodes WHERE is_enabled=1 AND health_status='ONLINE' ORDER BY last_health_at DESC,id LIMIT 1");
