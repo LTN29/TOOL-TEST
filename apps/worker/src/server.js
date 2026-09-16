@@ -121,9 +121,30 @@ app.post('/execute',async(req,res)=>{
       await page.waitForTimeout(Math.max(1500,dryRunHoldMs));
       return res.json({ok:true,dryRun:true,workerName,message:'Typed and verified; not submitted'});
     }
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(Math.max(1500,actionDelay));
-    res.json({ok:true,dryRun:false,workerName,message:'Submit action sent'});
+    const sendSelectors=[
+      'div[role="dialog"] [role="button"][aria-label="Bình luận"]',
+      'div[role="dialog"] [role="button"][aria-label="Comment"]',
+      'div[role="dialog"] [role="button"][aria-label="Gửi"]',
+      'div[role="dialog"] [role="button"][aria-label="Send"]',
+      'div[role="dialog"] button[aria-label="Bình luận"]',
+      'div[role="dialog"] button[aria-label="Comment"]'
+    ];
+    let sendButton=null;
+    for(const sel of sendSelectors){
+      const loc=page.locator(`${sel}:visible`).last();
+      if(await loc.count().catch(()=>0)){ sendButton=loc; break; }
+    }
+    if(sendButton) await sendButton.click();
+    else await box.press('Enter');
+
+    let submitted=false;
+    for(let i=0;i<12;i++){
+      await page.waitForTimeout(500);
+      const remaining=String(await box.textContent().catch(()=>'')).replace(/\s+/g,' ').trim();
+      if(!remaining.includes(expected)){ submitted=true; break; }
+    }
+    if(!submitted) throw new Error('Comment submit was not confirmed');
+    res.json({ok:true,dryRun:false,workerName,message:sendButton?'Send button clicked and confirmed':'Enter submitted and confirmed'});
   }catch(e){
     const errorCode=classifyError(e);
     res.status(errorCode==='WORKER_BUSY'?409:500).json({ok:false,errorCode,error:String(e.message||e),workerName});
