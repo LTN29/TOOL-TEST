@@ -104,7 +104,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ runId: $('Claim Next Job').item.json.runId, profileKey: $('Claim Next Job').item.json.profile_key, postUrl: $('Claim Next Job').item.json.post_url, commentText: $('Claim Next Job').item.json.comment_text, dryRun: $('Claim Next Job').item.json.dry_run }) }}",
+        "body": "={{ JSON.stringify({ runId: $('Claim Next Job').item.json.runId, profileKey: $('Claim Next Job').item.json.profile_key, postUrl: $('Claim Next Job').item.json.post_url, commentText: $('Claim Next Job').item.json.comment_text, dryRun: $('Claim Next Job').item.json.dry_run, idempotencyKey: $('Claim Next Job').item.json.idempotency_key, progressUrl: $('Claim Next Job').item.json.progressUrl, guardUrl: $('Claim Next Job').item.json.guardUrl }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -132,7 +132,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ ok: !!$json.ok, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: !!$json.dryRun }) }}",
+        "body": "={{ JSON.stringify({ ok: !!$json.ok, outcome: $json.outcome || null, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: !!$json.dryRun, idempotencyKey: $('Claim Next Job').item.json.idempotency_key }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [

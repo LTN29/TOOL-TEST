@@ -21,40 +21,12 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://host.docker.internal:4300/api/automation/manual",
+        "url": "=http://host.docker.internal:4300/api/automation/claim-job/{{$('Manual Webhook').item.json.body.jobId}}",
         "options": {},
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ postId: $json.body.postId, accountId: $json.body.accountId }) }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "x-automation-token",
-              "value": "={{ $env.AUTOMATION_TOKEN }}"
-            }
-          ]
-        }
-      },
-      "id": "make-due",
-      "name": "Make Job Due",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        230,
-        0
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=http://host.docker.internal:4300/api/automation/claim-job/{{$json.jobId}}",
-        "options": {},
-        "sendBody": true,
-        "contentType": "raw",
-        "rawContentType": "application/json",
-        "body": "{}",
+        "body": "={{ JSON.stringify({ idempotencyKey: $('Manual Webhook').item.json.body.idempotencyKey }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -89,7 +61,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ runId: $('Claim Manual Job').item.json.runId, profileKey: $('Claim Manual Job').item.json.profile_key, postUrl: $('Claim Manual Job').item.json.post_url, commentText: $('Claim Manual Job').item.json.comment_text, dryRun: $('Claim Manual Job').item.json.dry_run }) }}",
+        "body": "={{ JSON.stringify({ runId: $('Claim Manual Job').item.json.runId, profileKey: $('Claim Manual Job').item.json.profile_key, postUrl: $('Claim Manual Job').item.json.post_url, commentText: $('Claim Manual Job').item.json.comment_text, dryRun: $('Claim Manual Job').item.json.dry_run, idempotencyKey: $('Claim Manual Job').item.json.idempotency_key, progressUrl: $('Claim Manual Job').item.json.progressUrl, guardUrl: $('Claim Manual Job').item.json.guardUrl }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -117,7 +89,7 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "={{ JSON.stringify({ ok: !!$json.ok, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: !!$json.dryRun }) }}",
+        "body": "={{ JSON.stringify({ ok: !!$json.ok, outcome: $json.outcome || null, errorCode: $json.errorCode || null, errorMessage: $json.error || null, skipped: !!$json.dryRun, idempotencyKey: $('Claim Manual Job').item.json.idempotency_key }) }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -140,17 +112,6 @@
   ],
   "connections": {
     "Manual Webhook": {
-      "main": [
-        [
-          {
-            "node": "Make Job Due",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Make Job Due": {
       "main": [
         [
           {

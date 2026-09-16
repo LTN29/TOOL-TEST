@@ -121,23 +121,28 @@ app.post('/profiles/status',async(req,res)=>{
 });
 
 app.post('/execute',async(req,res)=>{
-  const {runId,profileKey,postUrl,commentText,dryRun}=req.body||{};
+  const {runId,profileKey,postUrl,commentText,dryRun,idempotencyKey,progressUrl,guardUrl}=req.body||{};
   if(!runId||!profileKey||!postUrl||!commentText) return res.status(400).json({ok:false,errorCode:'BAD_REQUEST',error:'runId, profileKey, postUrl, commentText required'});
   if(!validProfileKey(profileKey)||!validFacebookUrl(postUrl)) return res.status(400).json({ok:false,errorCode:'BAD_REQUEST',error:'Invalid profile key or Facebook URL'});
   if(busyProfiles.has(profileKey)) return res.status(409).json({ok:false,errorCode:'WORKER_BUSY',error:'profile is already executing another job'});
   busyProfiles.add(profileKey);
   const effectiveDryRun=defaultDryRun||!!dryRun;
-  let ctx;
+  let ctx; let submitAttempted=false;
+  const apiHeaders={'Content-Type':'application/json',...(automationToken?{'x-automation-token':automationToken}:{})};
+  const progress=async stage=>{if(!progressUrl)return;const r=await fetch(progressUrl,{method:'POST',headers:apiHeaders,body:JSON.stringify({stage,idempotencyKey})});if(!r.ok)throw new Error(`Job state changed before ${stage}`)};
   try{
+    await progress('OPENING_BROWSER');
     ctx=await openProfile(profileKey);
     const page=ctx.pages()[0]||await ctx.newPage();
     page.setDefaultTimeout(navTimeout);
+    await progress('NAVIGATING');
     await page.goto(postUrl,{waitUntil:'domcontentloaded',timeout:navTimeout});
     await page.waitForTimeout(actionDelay);
     const pageStatus=await classifyPage(page);
     if(pageStatus==='CHECKPOINT') throw new Error('Facebook checkpoint detected');
     if(pageStatus==='SESSION_EXPIRED') throw new Error('Facebook session expired or login required');
 
+    await progress('LOCATING_COMMENT_BOX');
     const selectors=[
       'div[role="dialog"] [aria-label*="bình luận" i][contenteditable="true"]',
       'div[role="dialog"] [aria-label*="comment" i][contenteditable="true"]',
@@ -155,37 +160,43 @@ app.post('/execute',async(req,res)=>{
     await box.scrollIntoViewIfNeeded();
     await box.click();
     await page.waitForTimeout(250);
+    await progress('TYPING');
     await page.keyboard.insertText(commentText);
     await page.waitForTimeout(700);
     const typedText=String(await box.textContent().catch(()=>'' )).replace(/\s+/g,' ').trim();
     const expected=String(commentText).replace(/\s+/g,' ').trim();
-    if(!typedText.includes(expected)) throw new Error('Comment box verification failed after typing');
+    if(typedText!==expected) throw new Error('Comment box verification failed after typing');
     if(effectiveDryRun){
       await page.waitForTimeout(Math.max(1500,dryRunHoldMs));
       return res.json({ok:true,dryRun:true,workerName,message:'Typed and verified; not submitted'});
     }
+    if(!page.url().includes('facebook.com')) throw new Error('Current page is not Facebook');
+    const finalSession=await classifyPage(page);
+    if(finalSession!=='READY') throw new Error(finalSession==='CHECKPOINT'?'Facebook checkpoint detected':'Facebook session expired');
+    if(!guardUrl) throw new Error('Missing final submit guard');
+    const guard=await fetch(guardUrl,{method:'POST',headers:apiHeaders,body:JSON.stringify({idempotencyKey})});
+    if(!guard.ok) throw new Error('Job is no longer authorized to submit');
     const sendTarget=await findSendButton(page,box);
     if(!sendTarget) throw new Error('Comment send button not found');
     console.log(`[run ${runId}] submitting comment via ${sendTarget.method}`);
+    await progress('SUBMITTING');
+    submitAttempted=true;
     await sendTarget.locator.click({timeout:5000});
-
+    await progress('VERIFYING');
     let submitted=false;
     for(let i=0;i<12;i++){
       await page.waitForTimeout(500);
-      const editorVisible=await box.isVisible().catch(()=>false);
-      if(!editorVisible){
-        const posted=page.getByText(commentText,{exact:true}).last();
-        if(await posted.isVisible().catch(()=>false)){submitted=true;break;}
-        continue;
-      }
-      const remaining=String(await box.textContent().catch(()=>null)||'').replace(/\s+/g,' ').trim();
-      if(!remaining.includes(expected)){submitted=true;break;}
+      const posted=page.getByText(commentText,{exact:true}).last();
+      if(await posted.isVisible().catch(()=>false)){submitted=true;break;}
     }
-    if(!submitted) throw new Error(`Comment submit was not confirmed after ${sendTarget.method}`);
-    res.json({ok:true,dryRun:false,workerName,message:`Comment submitted and confirmed via ${sendTarget.method}`});
+    if(!submitted) return res.json({ok:false,outcome:'UNKNOWN',errorCode:'SUBMIT_UNCONFIRMED',error:`Clicked ${sendTarget.method}, but the posted comment could not be verified`,workerName});
+    await progress('SUCCESS');
+    res.json({ok:true,outcome:'SUCCESS',dryRun:false,workerName,message:`Comment submitted and verified via ${sendTarget.method}`});
   }catch(e){
-    const errorCode=classifyError(e);
-    res.status(errorCode==='WORKER_BUSY'?409:500).json({ok:false,errorCode,error:String(e.message||e),workerName});
+    let errorCode=classifyError(e);
+    if(!submitAttempted&&errorCode==='NETWORK_ERROR')errorCode='NETWORK_ERROR_BEFORE_SUBMIT';
+    if(!submitAttempted&&errorCode==='TIMEOUT')errorCode='PAGE_LOAD_FAILED';
+    res.status(errorCode==='WORKER_BUSY'?409:500).json({ok:false,outcome:submitAttempted?'UNKNOWN':'FAILED',errorCode,error:String(e.message||e),workerName});
   }finally{
     if(ctx) await ctx.close().catch(()=>{});
     busyProfiles.delete(profileKey);

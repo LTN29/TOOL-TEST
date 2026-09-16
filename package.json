@@ -12,6 +12,7 @@
     "dev:worker": "npm --prefix apps/worker start",
     "build": "npm --prefix apps/web run build",
     "check": "node scripts/check-project.mjs && node --check apps/api/src/server.js && node --check apps/worker/src/server.js && node --check apps/worker/src/login.js",
+    "test:safety": "node scripts/test-live-safety.mjs",
     "install:all": "npm install && npm --prefix apps/api install && npm --prefix apps/web install && npm --prefix apps/worker install",
     "playwright:install": "npm --prefix apps/worker exec playwright install chromium",
     "db:setup": "node scripts/setup-db.mjs",
