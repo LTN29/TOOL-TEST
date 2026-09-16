@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import mysql from 'mysql2/promise';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'node:crypto';
 
 const app = express();
 app.disable('x-powered-by');
@@ -24,15 +25,32 @@ const asBool = v => v === true || v === 1 || v === '1' || v === 'true';
 const n = (v, d=0) => Number.isFinite(Number(v)) ? Number(v) : d;
 const liveTestMaxJobs = Math.max(1,n(process.env.LIVE_TEST_MAX_JOBS,1));
 const n8nManualWebhook = process.env.N8N_MANUAL_WEBHOOK_URL || 'http://127.0.0.1:5678/webhook/fb-comment-now';
+const deviceActivationCode=String(process.env.DEVICE_ACTIVATION_CODE||'').trim();
+const hashToken=value=>crypto.createHash('sha256').update(String(value)).digest('hex');
+const makeDeviceToken=()=>`simi_${crypto.randomBytes(32).toString('hex')}`;
 const err = (res, code, message) => res.status(code).json({ error: message });
 const isFacebookUrl=value=>{try{const u=new URL(value);return u.protocol==='https:'&&(u.hostname==='facebook.com'||u.hostname.endsWith('.facebook.com'))}catch{return false}};
 
 app.get('/health', async (_req,res) => {
   await pool.query('SELECT 1');
-  res.json({ ok:true, database:true, apiDryRun:globalDryRun, dryRun:globalDryRun, liveTestMaxJobs, version:'2.2.0' });
+  let n8n=false;try{n8n=(await fetch(process.env.N8N_HEALTH_URL||'http://n8n:5678/healthz',{signal:AbortSignal.timeout(1200)})).ok}catch{}
+  res.json({ ok:true, database:true, n8n, apiDryRun:globalDryRun, dryRun:globalDryRun, liveTestMaxJobs, version:'2.2.0' });
 });
 
-app.use('/api',(req,res,next)=>{
+app.post('/api/devices/register',async(req,res)=>{
+  const {activationCode,workerKey,deviceName,os='unknown',appVersion='unknown',baseUrl=''}=req.body||{};
+  if(!deviceActivationCode||activationCode!==deviceActivationCode)return err(res,401,'Mã kích hoạt không hợp lệ');
+  if(!/^[A-Za-z0-9_-]{3,120}$/.test(String(workerKey||''))||!String(deviceName||'').trim())return err(res,400,'workerKey và deviceName không hợp lệ');
+  const token=makeDeviceToken(),hash=hashToken(token),conn=await pool.getConnection();
+  try{await conn.beginTransaction();await conn.query(`INSERT INTO worker_nodes(worker_key,name,device_name,os,app_version,base_url,is_enabled,health_status,last_seen_at) VALUES(?,?,?,?,?,?,1,'ONLINE',NOW()) ON DUPLICATE KEY UPDATE name=VALUES(name),device_name=VALUES(device_name),os=VALUES(os),app_version=VALUES(app_version),base_url=VALUES(base_url),is_enabled=1,health_status='ONLINE',last_seen_at=NOW()`,[workerKey,deviceName,deviceName,os,appVersion,baseUrl||`http://127.0.0.1:4311`]);const [[worker]]=await conn.query('SELECT id,worker_key,device_name FROM worker_nodes WHERE worker_key=?',[workerKey]);await conn.query('UPDATE device_tokens SET revoked_at=NOW() WHERE worker_id=? AND revoked_at IS NULL',[worker.id]);await conn.query('INSERT INTO device_tokens(worker_id,token_hash) VALUES(?,?)',[worker.id,hash]);await conn.commit();res.status(201).json({worker,deviceToken:token});}catch(e){await conn.rollback();throw e}finally{conn.release()}
+});
+
+async function deviceContext(req){const supplied=req.get('x-device-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');if(!supplied)return null;const [[row]]=await pool.query(`SELECT d.id token_id,d.worker_id,w.worker_key,w.device_name,w.is_enabled FROM device_tokens d JOIN worker_nodes w ON w.id=d.worker_id WHERE d.token_hash=? AND d.revoked_at IS NULL`,[hashToken(supplied)]);if(!row||!row.is_enabled)return null;await pool.query('UPDATE device_tokens SET last_used_at=NOW() WHERE id=?',[row.token_id]);return row}
+async function requireDevice(req,res,next){try{const ctx=await deviceContext(req);if(!ctx)return err(res,401,'Device token không hợp lệ');req.device=ctx;next()}catch(e){next(e)}}
+
+app.use('/api',async(req,res,next)=>{
+  if(req.path==='/devices/register'&&req.method==='POST') return next();
+  const device=await deviceContext(req).catch(()=>null);if(device){req.device=device;return next();}
   if(!automationToken) return next();
   const supplied=req.get('x-automation-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');
   if(supplied!==automationToken) return res.status(401).json({error:'Không có quyền truy cập'});
@@ -45,7 +63,7 @@ app.get('/api/dashboard', async (_req,res) => {
     (SELECT COUNT(*) FROM fb_accounts WHERE is_active=1) activeAccounts,
     (SELECT COUNT(*) FROM posts WHERE is_enabled=1) enabledPosts,
     (SELECT COUNT(*) FROM post_accounts WHERE is_enabled=1) assignments,
-    (SELECT COUNT(*) FROM comment_jobs WHERE status='PENDING') pendingJobs,
+    (SELECT COUNT(*) FROM comment_jobs WHERE status IN ('PENDING','READY_FOR_WORKER')) pendingJobs,
     (SELECT COUNT(*) FROM comment_jobs WHERE status='RUNNING') runningJobs,
     (SELECT COUNT(*) FROM comment_jobs WHERE DATE(created_at)=CURRENT_DATE AND status='SUCCESS') successToday,
     (SELECT COUNT(*) FROM comment_jobs WHERE DATE(created_at)=CURRENT_DATE AND status='FAILED') failedToday
@@ -53,7 +71,7 @@ app.get('/api/dashboard', async (_req,res) => {
   const [nextJobs]=await pool.query(`SELECT j.id,j.scheduled_at,j.comment_text,j.status,j.dry_run,
     p.label post_label,a.name account_name,a.profile_key,c.name campaign_name
     FROM comment_jobs j JOIN posts p ON p.id=j.post_id JOIN fb_accounts a ON a.id=j.account_id JOIN campaigns c ON c.id=j.campaign_id
-    WHERE j.status IN ('PENDING','RETRY_DUE','RUNNING')
+    WHERE j.status IN ('PENDING','READY_FOR_WORKER','RETRY_DUE','RUNNING')
     ORDER BY CASE WHEN j.status='RUNNING' THEN 0 ELSE 1 END,j.scheduled_at ASC LIMIT 8`);
   res.json({...r,nextJobs});
 });
@@ -111,10 +129,10 @@ app.get('/api/campaigns/:id/windows', async (req,res) => {
 });
 
 app.get('/api/accounts', async (_req,res) => {
-  const [rows]=await pool.query(`SELECT a.*,
+  const [rows]=await pool.query(`SELECT a.*,w.worker_key,w.device_name,w.health_status worker_status,
     (SELECT COUNT(*) FROM post_accounts pa WHERE pa.account_id=a.id AND pa.is_enabled=1) assigned_posts,
     (SELECT COUNT(*) FROM comment_jobs j WHERE j.account_id=a.id AND DATE(j.finished_at)=CURRENT_DATE AND j.status='SUCCESS') success_today
-    FROM fb_accounts a ORDER BY a.id DESC`);
+    FROM fb_accounts a LEFT JOIN worker_nodes w ON w.id=a.assigned_worker_id ORDER BY a.id DESC`);
   res.json(rows);
 });
 app.post('/api/accounts', async (req,res) => {
@@ -198,7 +216,7 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
     let cursor=new Date(startAt);
     const created=[];
     for(const accountId of accountIds) {
-      const [[account]]=await conn.query('SELECT id FROM fb_accounts WHERE id=? AND is_active=1',[accountId]);
+      const [[account]]=await conn.query('SELECT id,assigned_worker_id FROM fb_accounts WHERE id=? AND is_active=1',[accountId]);
       if(!account) continue;
       const [[existingJob]]=await conn.query('SELECT id,status FROM comment_jobs WHERE campaign_id=? AND post_id=? AND account_id=? FOR UPDATE',[post.campaign_id,postId,accountId]);
       if(existingJob&&existingJob.status!=='PENDING') {const conflict=new Error(`Tài khoản #${accountId} đã có job ${existingJob.status} cho bài này; không tạo lại để tránh trùng bình luận`);conflict.status=409;throw conflict;}
@@ -227,8 +245,8 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
       } else template=await chooseTemplate(conn,post.campaign_id,postId,groupId);
       if(!template) throw new Error('No active comment template for campaign');
       const id=uuidv4();
-      await conn.query(`INSERT INTO comment_jobs(id,idempotency_key,campaign_id,post_id,account_id,template_id,group_id,comment_text,status,dry_run,execution_stage,effective_mode,scheduled_at)
-        VALUES(?,?,?,?,?,?,?,?,'PENDING',?,'QUEUED',?,?)
+      await conn.query(`INSERT INTO comment_jobs(id,idempotency_key,campaign_id,post_id,account_id,assigned_worker_id,template_id,group_id,comment_text,status,dry_run,execution_stage,effective_mode,scheduled_at)
+        VALUES(?,?,?,?,?,?,?, ?,?,'PENDING',?,'QUEUED',?,?)
         ON DUPLICATE KEY UPDATE
           scheduled_at=IF(status IN ('SUCCESS','RUNNING'),scheduled_at,VALUES(scheduled_at)),
           template_id=IF(status IN ('SUCCESS','RUNNING'),template_id,VALUES(template_id)),
@@ -239,7 +257,7 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
           attempt_count=IF(status IN ('SUCCESS','RUNNING'),attempt_count,0),
           finished_at=IF(status IN ('SUCCESS','RUNNING'),finished_at,NULL),
           error_code=NULL,error_message=NULL,retry_after=NULL`,
-        [id,id,post.campaign_id,postId,accountId,template.id,groupId,template.content,globalDryRun||!!post.campaign_dry_run,(globalDryRun||!!post.campaign_dry_run)?'DRY_RUN':'LIVE',cursor]);
+        [id,id,post.campaign_id,postId,accountId,account.assigned_worker_id,template.id,groupId,template.content,globalDryRun||!!post.campaign_dry_run,(globalDryRun||!!post.campaign_dry_run)?'DRY_RUN':'LIVE',cursor]);
       created.push({accountId,groupId,scheduledAt:cursor.toISOString(),templateId:template.id,commentText:template.content,dryRun:globalDryRun||!!post.campaign_dry_run});
       const gap=minGap+Math.floor(Math.random()*(maxGap-minGap+1));
       cursor=new Date(cursor.getTime()+gap*60000);
@@ -291,7 +309,23 @@ app.get('/api/jobs', async (req,res) => {
 });
 
 app.get('/api/workers', async (_req,res) => {
-  const [rows]=await pool.query('SELECT * FROM worker_nodes ORDER BY id'); res.json(rows);
+  await pool.query("UPDATE worker_nodes SET health_status='OFFLINE' WHERE is_enabled=1 AND last_seen_at IS NOT NULL AND last_seen_at < DATE_SUB(NOW(),INTERVAL 90 SECOND)");
+  const [rows]=await pool.query('SELECT w.*, (SELECT COUNT(*) FROM fb_accounts a WHERE a.assigned_worker_id=w.id AND a.is_active=1) account_count FROM worker_nodes w ORDER BY w.id'); res.json(rows);
+});
+
+app.post('/api/workers/heartbeat',requireDevice,async(req,res)=>{
+  const currentJob=req.body?.currentJobId||null;
+  const defaultDryRun=req.body?.defaultDryRun===undefined?true:asBool(req.body.defaultDryRun);
+  await pool.query("UPDATE worker_nodes SET health_status=IF(is_enabled=1,'ONLINE','DISABLED'),last_seen_at=NOW(),last_health_at=NOW(),current_job_id=?,default_dry_run=? WHERE id=?",[currentJob,defaultDryRun,req.device.worker_id]);
+  const [[worker]]=await pool.query('SELECT id,worker_key,device_name,health_status,is_enabled,current_job_id FROM worker_nodes WHERE id=?',[req.device.worker_id]);
+  res.json({ok:true,worker});
+});
+app.patch('/api/accounts/:id/worker',async(req,res)=>{
+  const workerId=req.body?.workerId===null||req.body?.workerId===''?null:n(req.body?.workerId,0);
+  if(workerId!==null){const [[w]]=await pool.query('SELECT id FROM worker_nodes WHERE id=? AND is_enabled=1',[workerId]);if(!w)return err(res,400,'Worker không tồn tại hoặc đang tắt');}
+  const [r]=await pool.query('UPDATE fb_accounts SET assigned_worker_id=? WHERE id=?',[workerId,n(req.params.id)]);if(!r.affectedRows)return err(res,404,'Không tìm thấy tài khoản');
+  await pool.query('UPDATE comment_jobs j JOIN fb_accounts a ON a.id=j.account_id SET j.assigned_worker_id=? WHERE j.account_id=? AND j.status IN (\'PENDING\',\'RETRY_DUE\')',[workerId,n(req.params.id)]);
+  res.json({ok:true,assignedWorkerId:workerId});
 });
 
 app.get('/api/system-status', async (_req,res) => {
@@ -318,21 +352,9 @@ app.post('/api/workers', async (req,res) => {
 });
 
 async function workerHealth() {
-  const [workers]=await pool.query('SELECT * FROM worker_nodes WHERE is_enabled=1 ORDER BY id');
+  const [workers]=await pool.query("SELECT * FROM worker_nodes WHERE is_enabled=1 ORDER BY id");
   const result=[];
-  for(const w of workers) {
-    try {
-      const ctrl=new AbortController(); const timer=setTimeout(()=>ctrl.abort(),5000);
-      const r=await fetch(`${w.base_url.replace(/\/$/,'')}/health`,{signal:ctrl.signal,headers:automationToken?{'x-automation-token':automationToken}:{}}); clearTimeout(timer);
-      const body=await r.json().catch(()=>({}));
-      if(!r.ok||!body.ok) throw new Error(`HTTP ${r.status}`);
-      await pool.query("UPDATE worker_nodes SET health_status='ONLINE',last_health_at=NOW(),last_error=NULL WHERE id=?",[w.id]);
-      result.push({id:w.id,name:w.name,online:true,baseUrl:w.base_url,defaultDryRun:!!body.defaultDryRun});
-    } catch(e) {
-      await pool.query("UPDATE worker_nodes SET health_status='OFFLINE',last_health_at=NOW(),last_error=? WHERE id=?",[String(e.message||e),w.id]);
-      result.push({id:w.id,name:w.name,online:false,baseUrl:w.base_url,error:String(e.message||e)});
-    }
-  }
+  for(const w of workers){const online=!!w.last_seen_at&&(Date.now()-new Date(w.last_seen_at).getTime()<90000);if(online&&w.health_status!=='ONLINE')await pool.query("UPDATE worker_nodes SET health_status='ONLINE',last_health_at=NOW(),last_error=NULL WHERE id=?",[w.id]);if(!online&&w.health_status==='ONLINE')await pool.query("UPDATE worker_nodes SET health_status='OFFLINE',last_error='Heartbeat quá hạn' WHERE id=?",[w.id]);result.push({id:w.id,name:w.name,online,baseUrl:w.base_url,defaultDryRun:w.default_dry_run!==false,lastSeenAt:w.last_seen_at,currentJobId:w.current_job_id});}
   return result;
 }
 
@@ -488,7 +510,7 @@ app.post('/api/automation/claim-job/:id', async (req,res) => {
     const [updated]=await conn.query(`UPDATE comment_jobs SET status='RUNNING',attempt_count=attempt_count+1,started_at=NOW(),worker_name=?,retry_after=NULL,execution_stage='OPENING_BROWSER',effective_mode=?,dry_run=? WHERE id=? AND status='PENDING'`,[worker.name,effectiveDryRun?'DRY_RUN':'LIVE',effectiveDryRun,j.id]);
     if(updated.affectedRows!==1){await conn.rollback();return res.status(409).json({error:'Job đã được claim',errorCode:'ALREADY_CLAIMED'});}
     await conn.commit();
-    const apiBase=process.env.API_INTERNAL_URL||`http://host.docker.internal:${n(process.env.PORT,4300)}`;
+    const apiBase=process.env.PUBLIC_API_URL||`${req.protocol}://${req.get('host')}`;
     res.json({...j,dry_run:effectiveDryRun,runId:j.id,workerName:worker.name,workerUrl:worker.base_url,progressUrl:`${apiBase}/api/automation/jobs/${j.id}/progress`,guardUrl:`${apiBase}/api/automation/jobs/${j.id}/guard`});
   } catch(e) { await conn.rollback(); res.status(500).json({error:e.message}); }
   finally { conn.release(); }
@@ -506,13 +528,22 @@ app.post('/api/automation/jobs/:id/guard',async(req,res)=>{
   res.status(canSubmit?200:409).json({canSubmit,status:j?.status||'NOT_FOUND',effectiveMode:j?.effective_mode||null});
 });
 
-app.post('/api/automation/claim-next', async (_req,res) => {
+app.post('/api/automation/dispatch-due', async (_req,res) => {
+  const [r]=await pool.query(`UPDATE comment_jobs j JOIN fb_accounts a ON a.id=j.account_id SET j.status='READY_FOR_WORKER',j.execution_stage='QUEUED' WHERE j.status='PENDING' AND j.scheduled_at<=NOW() AND (j.retry_after IS NULL OR j.retry_after<=NOW()) AND a.assigned_worker_id IS NOT NULL`);
+  res.json({ok:true,dispatched:r.affectedRows});
+});
+app.post('/api/automation/dispatch-job/:id', async (req,res)=>{
+  const [r]=await pool.query("UPDATE comment_jobs SET status='READY_FOR_WORKER',execution_stage='QUEUED' WHERE id=? AND status='PENDING' AND (?='' OR idempotency_key=?) AND assigned_worker_id IS NOT NULL",[req.params.id,String(req.body?.idempotencyKey||''),String(req.body?.idempotencyKey||'')]);
+  if(!r.affectedRows)return err(res,409,'Job không ở trạng thái PENDING hoặc chưa gán worker');
+  res.json({ok:true,dispatched:1,jobId:req.params.id});
+});
+
+app.post('/api/worker/jobs/claim-next', requireDevice, async (req,res) => {
   const conn=await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const [workers]=await conn.query("SELECT * FROM worker_nodes WHERE is_enabled=1 AND health_status='ONLINE' ORDER BY last_health_at DESC,id LIMIT 1");
-    if(!workers.length) { await conn.rollback(); return res.status(204).end(); }
-    const worker=workers[0];
+    const [[worker]]=await conn.query("SELECT * FROM worker_nodes WHERE id=? AND is_enabled=1 AND health_status='ONLINE' FOR UPDATE",[req.device.worker_id]);
+    if(!worker) { await conn.rollback(); return res.status(204).end(); }
     const [rows]=await conn.query(`SELECT j.id,j.idempotency_key,j.campaign_id,j.post_id,j.account_id,j.comment_text,j.dry_run,j.attempt_count,
       p.post_url,p.label,a.profile_key,a.name account_name,c.name campaign_name,
       COALESCE(a.daily_limit_override,c.max_comments_per_account_per_day) daily_limit
@@ -520,7 +551,7 @@ app.post('/api/automation/claim-next', async (_req,res) => {
       JOIN posts p ON p.id=j.post_id
       JOIN fb_accounts a ON a.id=j.account_id
       JOIN campaigns c ON c.id=j.campaign_id
-      WHERE j.status='PENDING'
+      WHERE j.status IN ('PENDING','READY_FOR_WORKER') AND j.assigned_worker_id=?
         AND j.scheduled_at<=NOW()
         AND (j.retry_after IS NULL OR j.retry_after<=NOW())
         AND p.is_enabled=1 AND a.is_active=1 AND c.is_active=1
@@ -530,16 +561,16 @@ app.post('/api/automation/claim-next', async (_req,res) => {
         AND NOT EXISTS (SELECT 1 FROM comment_jobs cool WHERE cool.account_id=j.account_id AND cool.status='SUCCESS' AND cool.finished_at>DATE_SUB(NOW(),INTERVAL c.cooldown_minutes MINUTE))
         AND NOT EXISTS (SELECT 1 FROM comment_jobs r WHERE r.account_id=j.account_id AND r.status='RUNNING')
         AND NOT EXISTS (SELECT 1 FROM comment_jobs rp WHERE rp.post_id=j.post_id AND rp.status='RUNNING')
-      ORDER BY j.scheduled_at ASC,p.priority ASC,j.created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`);
+      ORDER BY j.scheduled_at ASC,p.priority ASC,j.created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,[worker.id]);
     if(!rows.length) { await conn.rollback(); return res.status(204).end(); }
     const j=rows[0];
-    const health=await fetch(`${worker.base_url.replace(/\/$/,'')}/health`,{headers:automationToken?{'x-automation-token':automationToken}:{}}).then(r=>r.json());
     const [[campaignMode]]=await conn.query('SELECT dry_run FROM campaigns WHERE id=?',[j.campaign_id]);
-    const effectiveDryRun=globalDryRun||!!health.defaultDryRun||!!campaignMode.dry_run;
+    const effectiveDryRun=globalDryRun||!!worker.default_dry_run||!!campaignMode.dry_run;
     if(!effectiveDryRun){const [[live]]=await conn.query("SELECT COUNT(*) total FROM comment_jobs WHERE status='RUNNING' AND effective_mode='LIVE'");if(live.total>=liveTestMaxJobs){await conn.rollback();return res.status(409).json({errorCode:'LIVE_TEST_LIMIT',error:'Live test limit reached'});}}
-    await conn.query(`UPDATE comment_jobs SET status='RUNNING',attempt_count=attempt_count+1,started_at=NOW(),worker_name=?,execution_stage='OPENING_BROWSER',effective_mode=?,dry_run=? WHERE id=? AND status='PENDING'`,[worker.name,effectiveDryRun?'DRY_RUN':'LIVE',effectiveDryRun,j.id]);
+    await conn.query(`UPDATE comment_jobs SET status='RUNNING',attempt_count=attempt_count+1,started_at=NOW(),worker_name=?,assigned_worker_id=?,execution_stage='OPENING_BROWSER',effective_mode=?,dry_run=? WHERE id=? AND status IN ('PENDING','READY_FOR_WORKER')`,[worker.name,worker.id,effectiveDryRun?'DRY_RUN':'LIVE',effectiveDryRun,j.id]);
+    await conn.query('UPDATE worker_nodes SET current_job_id=? WHERE id=?',[j.id,worker.id]);
     await conn.commit();
-    const apiBase=process.env.API_INTERNAL_URL||`http://host.docker.internal:${n(process.env.PORT,4300)}`;
+    const apiBase=process.env.PUBLIC_API_URL||`${req.protocol}://${req.get('host')}`;
     res.json({...j,dry_run:effectiveDryRun,runId:j.id,workerName:worker.name,workerUrl:worker.base_url,progressUrl:`${apiBase}/api/automation/jobs/${j.id}/progress`,guardUrl:`${apiBase}/api/automation/jobs/${j.id}/guard`});
   } catch(e) { await conn.rollback(); console.error(e); res.status(500).json({error:e.message}); }
   finally { conn.release(); }
@@ -551,6 +582,7 @@ app.post('/api/automation/jobs/:id/result', async (req,res) => {
   const stage=status==='SUCCESS'?'SUCCESS':status;
   const [result]=await pool.query(`UPDATE comment_jobs SET status=?,execution_stage=?,execution_result=?,error_code=?,error_message=?,verified_at=IF(?='SUCCESS',NOW(),verified_at),finished_at=NOW() WHERE id=? AND status='RUNNING' AND idempotency_key=?`,[status,stage,status,errorCode||null,errorMessage||null,status,req.params.id,idempotencyKey]);
   if(!result.affectedRows) return err(res,409,'Job không ở trạng thái đang chạy');
+  await pool.query("UPDATE worker_nodes w JOIN comment_jobs j ON j.assigned_worker_id=w.id SET w.current_job_id=NULL WHERE j.id=?",[req.params.id]);
   if(['SESSION_EXPIRED','CHECKPOINT'].includes(errorCode)) {
     await pool.query(`UPDATE fb_accounts a JOIN comment_jobs j ON j.account_id=a.id SET a.session_status=?,a.last_health_at=NOW() WHERE j.id=?`,[errorCode,req.params.id]);
   }

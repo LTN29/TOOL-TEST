@@ -16,7 +16,10 @@ const settingsFile=path.join(userData,'settings.json');
 const logs=[];
 let window=null,tray=null,quitting=false,api=null,worker=null;
 let loginSession=null,loginWorkerWasRunning=false;
-const defaults={startApi:true,startWorker:true,checkN8n:true,continueOnClose:true,openAtLogin:false};
+const defaults={startApi:isDev,startWorker:true,checkN8n:true,continueOnClose:true,openAtLogin:false,serverUrl:'http://127.0.0.1:4300',workerKey:'',deviceName:'',deviceOs:process.platform,appVersion:'0.1.0'};
+const tokenFile=path.join(userData,'device-token.bin');
+function getDeviceToken(){try{if(!fs.existsSync(tokenFile)||!require('electron').safeStorage.isEncryptionAvailable())return '';return require('electron').safeStorage.decryptString(fs.readFileSync(tokenFile))}catch{return ''}}
+function saveDeviceToken(token){if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('OS secure storage chưa khả dụng');fs.writeFileSync(tokenFile,require('electron').safeStorage.encryptString(token),{mode:0o600})}
 
 function parseEnv(file){
   if(!fs.existsSync(file))return {};
@@ -31,7 +34,7 @@ function writeLog(source,message){
   if(logs.length>500)logs.splice(0,logs.length-500);
 }
 function changed(){updateTray();window?.webContents.send('simi:status-changed')}
-function backendEnv(port){return {...process.env,...config,PORT:String(port),HOST:'127.0.0.1',DOTENV_CONFIG_PATH:configFile,PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_CHANNEL:isDev?(config.PLAYWRIGHT_CHANNEL||''):(config.PLAYWRIGHT_CHANNEL||'chrome')}}
+function backendEnv(port){const settings=getSettings();return {...process.env,...config,PORT:String(port),HOST:'127.0.0.1',DOTENV_CONFIG_PATH:configFile,PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_CHANNEL:isDev?(config.PLAYWRIGHT_CHANNEL||''):(config.PLAYWRIGHT_CHANNEL||'chrome'),CENTRAL_API_URL:settings.serverUrl,DEVICE_TOKEN:getDeviceToken(),WORKER_NAME:settings.workerKey||config.WORKER_NAME||'desktop-worker'}}
 function makeServices(){
   api=new ManagedService({name:'API',port:4300,script:path.join(backendRoot,'api','src','server.js'),cwd:userData,env:backendEnv(4300),identity:b=>b.ok===true&&typeof b.version==='string',onLog:writeLog,onChange:changed});
   worker=new ManagedService({name:'WORKER',port:4311,script:path.join(backendRoot,'worker','src','server.js'),cwd:userData,env:backendEnv(4311),identity:b=>b.ok===true&&typeof b.workerName==='string',onLog:writeLog,onChange:changed});
@@ -42,7 +45,7 @@ async function dockerStatus(){try{await run('docker',['info','--format','{{.Serv
 async function httpReady(url){try{return (await fetch(url,{signal:AbortSignal.timeout(2500)})).ok}catch{return false}}
 async function systemStatus(){
   const [mysql,n8n,docker]=await Promise.all([tcpOpen(Number(config.DB_PORT||3307)),httpReady('http://127.0.0.1:5678/healthz'),dockerStatus()]);
-  return {api:api.snapshot(),worker:worker.snapshot(),mysql:mysql?'RUNNING':'STOPPED',n8n:n8n?'RUNNING':'STOPPED',docker,configReady:fs.existsSync(configFile),configPath:configFile};
+  return {api:api.snapshot(),worker:worker.snapshot(),mysql:mysql?'RUNNING':'STOPPED',n8n:n8n?'RUNNING':'STOPPED',docker,configReady:fs.existsSync(configFile),configPath:configFile,serverUrl:getSettings().serverUrl,deviceRegistered:!!getDeviceToken()};
 }
 function showWindow(){if(!window)return;window.show();window.focus();if(process.platform==='darwin')app.dock?.show()}
 function trayIcon(){
@@ -78,17 +81,24 @@ function registerIpc(){
     if(typeof requestPath!=='string'||!/^\/api\/[A-Za-z0-9_/?=&.%-]+$/.test(requestPath))throw new Error('API path không hợp lệ');
     const method=String(options.method||'GET').toUpperCase();if(!['GET','POST','PATCH'].includes(method))throw new Error('Method không hợp lệ');
     const body=options.body===undefined?undefined:String(options.body);if(body&&body.length>1024*1024)throw new Error('Request quá lớn');
-    const response=await fetch(`http://127.0.0.1:4300${requestPath}`,{method,body,headers:{'Content-Type':'application/json',...(config.AUTOMATION_TOKEN?{'x-automation-token':config.AUTOMATION_TOKEN}:{})},signal:AbortSignal.timeout(30000),redirect:'error'});
+    const settings=getSettings();const base=String(settings.serverUrl||'http://127.0.0.1:4300').replace(/\/$/,'');const token=getDeviceToken();
+    const response=await fetch(`${base}${requestPath}`,{method,body,headers:{'Content-Type':'application/json',...(token?{'x-device-token':token}:{}),...(config.AUTOMATION_TOKEN?{'x-automation-token':config.AUTOMATION_TOKEN}:{})},signal:AbortSignal.timeout(30000),redirect:'error'});
     return {status:response.status,ok:response.ok,data:response.status===204?null:await response.json().catch(()=>({}))};
   });
   ipcMain.handle('simi:status',systemStatus);
   ipcMain.handle('simi:logs',()=>logs.slice(-300));
   ipcMain.handle('simi:settings:get',getSettings);
   ipcMain.handle('simi:settings:save',(_event,values)=>{
-    const current=getSettings();for(const key of Object.keys(defaults))if(typeof values?.[key]==='boolean')current[key]=values[key];
+    const current=getSettings();for(const key of Object.keys(defaults))if(typeof values?.[key]==='boolean'||['serverUrl','workerKey','deviceName','deviceOs'].includes(key)&&typeof values?.[key]==='string')current[key]=values[key];
     fs.writeFileSync(settingsFile,JSON.stringify(current,null,2));
     if(process.platform==='darwin')app.setLoginItemSettings({openAtLogin:current.openAtLogin});
     return current;
+  });
+  ipcMain.handle('simi:device:register',async(_event,values)=>{
+    const current=getSettings();const base=String(values?.serverUrl||current.serverUrl||'').replace(/\/$/,'');
+    if(!/^https?:\/\//.test(base))throw new Error('Server URL không hợp lệ');
+    const response=await fetch(`${base}/api/devices/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activationCode:values.activationCode,workerKey:values.workerKey,deviceName:values.deviceName,os:values.deviceOs||process.platform,appVersion:values.appVersion||'0.1.0',baseUrl:''}),signal:AbortSignal.timeout(15000)});
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Đăng ký thất bại (${response.status})`);saveDeviceToken(data.deviceToken);const next={...current,serverUrl:base,workerKey:values.workerKey,deviceName:values.deviceName,deviceOs:values.deviceOs||process.platform};fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));return {worker:data.worker,serverUrl:base};
   });
   ipcMain.handle('simi:worker:restart',async()=>{await worker.restart();return worker.snapshot()});
   ipcMain.handle('simi:n8n:open',()=>shell.openExternal('http://127.0.0.1:5678'));

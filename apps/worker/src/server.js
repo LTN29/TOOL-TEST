@@ -17,6 +17,9 @@ const actionDelay=Number(process.env.ACTION_DELAY_MS||1200);
 const dryRunHoldMs=Number(process.env.DRY_RUN_HOLD_MS||8000);
 const workerName=process.env.WORKER_NAME||'local-worker';
 const automationToken=String(process.env.AUTOMATION_TOKEN||'').trim();
+const deviceToken=String(process.env.DEVICE_TOKEN||'').trim();
+const centralApiUrl=String(process.env.CENTRAL_API_URL||'').replace(/\/$/,'');
+const workerPollMs=Math.max(3000,Number(process.env.WORKER_POLL_MS||5000));
 const busyProfiles=new Set();
 fs.mkdirSync(profileRoot,{recursive:true});
 const validProfileKey=value=>/^[a-zA-Z0-9_-]{1,120}$/.test(String(value||''));
@@ -89,8 +92,8 @@ async function findSendButton(page,box){
 app.get('/health',(_req,res)=>res.json({ok:true,workerName,headless,defaultDryRun,busyCount:busyProfiles.size}));
 app.use((req,res,next)=>{
   if(!automationToken) return next();
-  const supplied=req.get('x-automation-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');
-  if(supplied!==automationToken) return res.status(401).json({ok:false,errorCode:'UNAUTHORIZED',error:'Unauthorized'});
+  const supplied=req.get('x-automation-token')||req.get('x-device-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');
+  if(supplied!==automationToken&&supplied!==deviceToken) return res.status(401).json({ok:false,errorCode:'UNAUTHORIZED',error:'Unauthorized'});
   next();
 });
 app.get('/profiles',(_req,res)=>{
@@ -201,4 +204,7 @@ app.post('/execute',async(req,res)=>{
   }
 });
 
-app.listen(port,'127.0.0.1',()=>console.log(`Browser Worker v2 ${workerName} listening on 127.0.0.1:${port}; DRY_RUN=${defaultDryRun}`));
+async function reportHeartbeat(currentJobId=null){if(!centralApiUrl||!deviceToken)return;try{await fetch(`${centralApiUrl}/api/workers/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify({currentJobId,defaultDryRun}),signal:AbortSignal.timeout(5000)})}catch(e){console.warn(`[worker] heartbeat failed: ${e.message}`)}}
+let polling=false;
+async function claimAndExecute(){if(!centralApiUrl||!deviceToken||polling)return;polling=true;try{const r=await fetch(`${centralApiUrl}/api/worker/jobs/claim-next`,{method:'POST',headers:{'x-device-token':deviceToken},signal:AbortSignal.timeout(8000)});if(r.status===204)return;const job=await r.json();if(!r.ok)throw new Error(job.error||`claim HTTP ${r.status}`);await reportHeartbeat(job.id);const local=await fetch(`http://127.0.0.1:${port}/execute`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify(job),signal:AbortSignal.timeout(120000)});const result=await local.json().catch(()=>({ok:false,errorCode:'UNKNOWN_ERROR',error:`Worker HTTP ${local.status}`}));await fetch(`${centralApiUrl}/api/automation/jobs/${job.id}/result`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify({ok:!!result.ok,skipped:!!result.dryRun,outcome:result.outcome||null,errorCode:result.errorCode||null,errorMessage:result.error||null,idempotencyKey:job.idempotency_key}),signal:AbortSignal.timeout(10000)});await reportHeartbeat(null)}catch(e){console.warn(`[worker] claim/execute failed: ${e.message}`)}finally{polling=false}}
+app.listen(port,'127.0.0.1',()=>{console.log(`Browser Worker v2 ${workerName} listening on 127.0.0.1:${port}; DRY_RUN=${defaultDryRun}`);if(centralApiUrl&&deviceToken){reportHeartbeat();setInterval(()=>reportHeartbeat(busyProfiles.size? 'busy':null),20000);setInterval(claimAndExecute,workerPollMs);console.log(`[worker] outbound polling ${centralApiUrl} every ${workerPollMs}ms`)}});

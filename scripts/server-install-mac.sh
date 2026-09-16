@@ -12,7 +12,8 @@ if [[ ! -f .env.server ]]; then
   app_password="$(openssl rand -hex 24)"
   n8n_key="$(openssl rand -hex 32)"
   internal_token="$(openssl rand -hex 32)"
-  sed -i '' "s/CHANGE_ME_ROOT/$root_password/;s/CHANGE_ME_APP/$app_password/;s/CHANGE_ME_N8N_KEY/$n8n_key/;s/CHANGE_ME_INTERNAL_TOKEN/$internal_token/" .env.server
+  activation_code="$(openssl rand -hex 12)"
+  sed -i '' "s/CHANGE_ME_ROOT/$root_password/;s/CHANGE_ME_APP/$app_password/;s/CHANGE_ME_N8N_KEY/$n8n_key/;s/CHANGE_ME_INTERNAL_TOKEN/$internal_token/;s/CHANGE_ME_DEVICE_ACTIVATION/$activation_code/" .env.server
   echo "Đã tạo .env.server (quyền 600) với khóa ngẫu nhiên; không commit file này."
 else
   echo "Giữ nguyên .env.server hiện có; không ghi đè khóa/mật khẩu."

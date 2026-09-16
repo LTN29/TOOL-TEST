@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('simiDesktop',Object.freeze({
   getLogs:()=>ipcRenderer.invoke('simi:logs'),
   getSettings:()=>ipcRenderer.invoke('simi:settings:get'),
   saveSettings:settings=>ipcRenderer.invoke('simi:settings:save',settings),
+  registerDevice:values=>ipcRenderer.invoke('simi:device:register',values),
   restartWorker:()=>ipcRenderer.invoke('simi:worker:restart'),
   openN8n:()=>ipcRenderer.invoke('simi:n8n:open'),
   setupN8nWorkflows:()=>ipcRenderer.invoke('simi:n8n:workflow-setup'),

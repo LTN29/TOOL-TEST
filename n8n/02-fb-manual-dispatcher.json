@@ -23,7 +23,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=http://host.docker.internal:4300/api/automation/claim-job/{{$('Manual Webhook').item.json.body.jobId}}",
+        "url": "=http://host.docker.internal:4300/api/automation/dispatch-job/{{$('Manual Webhook').item.json.body.jobId}}",
         "options": {},
         "sendBody": true,
         "contentType": "raw",
@@ -126,26 +126,10 @@
     },
     "Claim Manual Job": {
       "main": [
-        [
-          {
-            "node": "Browser Worker",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     },
-    "Browser Worker": {
-      "main": [
-        [
-          {
-            "node": "Save Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
+    "Browser Worker": {"main":[[]]}
   },
   "active": false,
   "settings": {
