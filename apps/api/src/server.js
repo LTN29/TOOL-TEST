@@ -48,7 +48,12 @@ app.get('/api/dashboard', async (_req,res) => {
     (SELECT COUNT(*) FROM comment_jobs WHERE DATE(created_at)=CURRENT_DATE AND status='SUCCESS') successToday,
     (SELECT COUNT(*) FROM comment_jobs WHERE DATE(created_at)=CURRENT_DATE AND status='FAILED') failedToday
   `);
-  res.json(r);
+  const [nextJobs]=await pool.query(`SELECT j.id,j.scheduled_at,j.comment_text,j.status,j.dry_run,
+    p.label post_label,a.name account_name,a.profile_key,c.name campaign_name
+    FROM comment_jobs j JOIN posts p ON p.id=j.post_id JOIN fb_accounts a ON a.id=j.account_id JOIN campaigns c ON c.id=j.campaign_id
+    WHERE j.status IN ('PENDING','RETRY_DUE','RUNNING')
+    ORDER BY CASE WHEN j.status='RUNNING' THEN 0 ELSE 1 END,j.scheduled_at ASC LIMIT 8`);
+  res.json({...r,nextJobs});
 });
 
 app.get('/api/campaigns', async (_req,res) => {
@@ -170,6 +175,7 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
   if(!accountIds.length) return err(res,400,'accountIds is required');
   const minGap=Math.max(0,n(req.body.minGapMinutes,10));
   const maxGap=Math.max(minGap,n(req.body.maxGapMinutes,30));
+  const requestedTemplateId=n(req.body.templateId,0);
   const startAt=req.body.startAt ? new Date(req.body.startAt) : new Date();
   if(Number.isNaN(startAt.getTime())) return err(res,400,'invalid startAt');
 
@@ -185,7 +191,10 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
       if(!account) continue;
       await conn.query(`INSERT INTO post_accounts(post_id,account_id,is_enabled,scheduled_at) VALUES(?,?,1,?)
         ON DUPLICATE KEY UPDATE is_enabled=1,scheduled_at=VALUES(scheduled_at)`,[postId,accountId,cursor]);
-      const template=await chooseTemplate(conn,post.campaign_id,postId);
+      let template;
+      if(requestedTemplateId){
+        [[template]]=await conn.query('SELECT id,content FROM comment_templates WHERE id=? AND campaign_id=? AND is_active=1',[requestedTemplateId,post.campaign_id]);
+      } else template=await chooseTemplate(conn,post.campaign_id,postId);
       if(!template) throw new Error('No active comment template for campaign');
       const id=uuidv4();
       await conn.query(`INSERT INTO comment_jobs(id,campaign_id,post_id,account_id,template_id,comment_text,status,dry_run,scheduled_at)
@@ -200,7 +209,7 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
           finished_at=IF(status IN ('SUCCESS','RUNNING'),finished_at,NULL),
           error_code=NULL,error_message=NULL,retry_after=NULL`,
         [id,post.campaign_id,postId,accountId,template.id,template.content,globalDryRun||!!post.campaign_dry_run,cursor]);
-      created.push({accountId,scheduledAt:cursor.toISOString()});
+      created.push({accountId,scheduledAt:cursor.toISOString(),templateId:template.id,commentText:template.content,dryRun:globalDryRun||!!post.campaign_dry_run});
       const gap=minGap+Math.floor(Math.random()*(maxGap-minGap+1));
       cursor=new Date(cursor.getTime()+gap*60000);
     }

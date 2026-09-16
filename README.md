@@ -27,7 +27,7 @@ Từ lần sau, double-click `START_LOCAL.cmd`. API, Web và trình điều khi�
 
 ## n8n
 
-Double-click `START_N8N.cmd`, mở `http://localhost:5678`, rồi import 5 file trong `n8n/`. MySQL Docker sẽ được bảo đảm đang chạy trước n8n. Chạy workflow Watchdog một lần trước khi bật Dispatcher.
+Khởi động n8n rồi import 5 workflow một lần. Trên Mac/Linux chạy `npm run n8n:import`; trên Windows import 5 file trong `n8n/` từ giao diện. Sau khi import, kiểm tra và nhấn Publish cho từng workflow. MySQL Docker sẽ được bảo đảm đang chạy trước n8n.
 
 ## Địa chỉ
 

@@ -58,6 +58,14 @@ Chạy n8n nền:
 
 Mở `http://localhost:5678`, import 5 file trong `n8n/`, chạy Watchdog một lần rồi mới bật Dispatcher. Dừng n8n bằng `./scripts/stop-n8n.sh`.
 
+Có thể import cả 5 workflow bằng một lệnh (chỉ chạy một lần):
+
+```bash
+npm run n8n:import
+```
+
+Sau đó mở giao diện n8n, kiểm tra và nhấn **Publish** cho từng workflow. n8n hiển thị Online chỉ có nghĩa container đang chạy; lịch tự động chỉ hoạt động khi workflow Dispatcher đã được import và Publish.
+
 ## 5. Cloudflare và bảo mật
 
 Chỉ đưa Web `http://localhost:5173` qua Cloudflare Tunnel. Điền hostname tunnel vào `APP_ALLOWED_HOSTS` trong `.env`, ví dụ `binhluan.example.com`. Không public trực tiếp MySQL `3307`, API `4300`, Trình điều khiển `4311` hoặc n8n `5678`. Bật Cloudflare Access để yêu cầu đăng nhập trước khi vào trang quản trị.

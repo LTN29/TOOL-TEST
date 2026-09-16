@@ -31,5 +31,5 @@ npm run check
 docker compose -f docker-compose.n8n.yml up -d --wait mysql
 npm run db:setup
 
-chmod +x scripts/start-local.sh scripts/stop-local.sh scripts/start-n8n.sh scripts/stop-n8n.sh
+chmod +x scripts/start-local.sh scripts/stop-local.sh scripts/start-n8n.sh scripts/stop-n8n.sh scripts/import-n8n-workflows.sh
 echo "MySQL Docker đang chạy tại 127.0.0.1:3307. Tiếp theo đăng nhập từng profile Facebook rồi chạy ./scripts/start-local.sh"
