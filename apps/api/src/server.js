@@ -194,7 +194,10 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
           scheduled_at=IF(status IN ('SUCCESS','RUNNING'),scheduled_at,VALUES(scheduled_at)),
           template_id=IF(status IN ('SUCCESS','RUNNING'),template_id,VALUES(template_id)),
           comment_text=IF(status IN ('SUCCESS','RUNNING'),comment_text,VALUES(comment_text)),
+          dry_run=IF(status IN ('SUCCESS','RUNNING'),dry_run,VALUES(dry_run)),
           status=IF(status='SUCCESS','SUCCESS',IF(status='RUNNING','RUNNING','PENDING')),
+          attempt_count=IF(status IN ('SUCCESS','RUNNING'),attempt_count,0),
+          finished_at=IF(status IN ('SUCCESS','RUNNING'),finished_at,NULL),
           error_code=NULL,error_message=NULL,retry_after=NULL`,
         [id,post.campaign_id,postId,accountId,template.id,template.content,globalDryRun||!!post.campaign_dry_run,cursor]);
       created.push({accountId,scheduledAt:cursor.toISOString()});
@@ -270,7 +273,12 @@ async function workerHealth() {
   return result;
 }
 
-app.post('/api/automation/watchdog', async (_req,res) => res.json({workers:await workerHealth()}));
+app.post('/api/automation/watchdog', async (_req,res) => {
+  const [stale]=await pool.query(`UPDATE comment_jobs
+    SET status='FAILED',error_code='TIMEOUT',error_message='Worker did not report a result within 5 minutes',finished_at=NOW()
+    WHERE status='RUNNING' AND started_at<DATE_SUB(NOW(),INTERVAL 5 MINUTE)`);
+  res.json({workers:await workerHealth(),staleJobsRecovered:stale.affectedRows});
+});
 
 app.post('/api/automation/requeue-retriable', async (_req,res) => {
   const [r]=await pool.query(`UPDATE comment_jobs SET status='RETRY_DUE',retry_after=NOW()
@@ -281,7 +289,7 @@ app.post('/api/automation/requeue-retriable', async (_req,res) => {
 app.post('/api/automation/manual', async (req,res) => {
   const {postId,accountId}=req.body;
   if(!postId||!accountId) return err(res,400,'postId and accountId are required');
-  const [r]=await pool.query(`UPDATE comment_jobs SET scheduled_at=NOW(),retry_after=NULL,status=CASE WHEN status='SUCCESS' THEN 'SUCCESS' ELSE 'PENDING' END
+  const [r]=await pool.query(`UPDATE comment_jobs SET scheduled_at=NOW(),retry_after=NULL,attempt_count=IF(status='SUCCESS',attempt_count,0),status=CASE WHEN status='SUCCESS' THEN 'SUCCESS' ELSE 'PENDING' END
     WHERE post_id=? AND account_id=?`,[n(postId),n(accountId)]);
   if(!r.affectedRows) return err(res,404,'job not found; assign the account to the post first');
   const [[j]]=await pool.query('SELECT id,status FROM comment_jobs WHERE post_id=? AND account_id=?',[n(postId),n(accountId)]);
@@ -433,7 +441,7 @@ app.post('/api/jobs/:id/action', async (req,res) => {
   const rule=transitions[action];
   if(!rule) return err(res,400,'Thao tác không hợp lệ');
   const marks=rule.from.map(()=>'?').join(',');
-  const [r]=await pool.query(`UPDATE comment_jobs SET status=?,scheduled_at=IF(?='PENDING',NOW(),scheduled_at),retry_after=NULL,error_code=IF(?='PENDING',NULL,error_code),error_message=IF(?='PENDING',NULL,error_message) WHERE id=? AND status IN (${marks})`,[rule.status,rule.status,rule.status,rule.status,req.params.id,...rule.from]);
+  const [r]=await pool.query(`UPDATE comment_jobs SET status=?,scheduled_at=IF(?='PENDING',NOW(),scheduled_at),attempt_count=IF(?='PENDING',0,attempt_count),retry_after=NULL,error_code=IF(?='PENDING',NULL,error_code),error_message=IF(?='PENDING',NULL,error_message) WHERE id=? AND status IN (${marks})`,[rule.status,rule.status,rule.status,rule.status,rule.status,req.params.id,...rule.from]);
   if(!r.affectedRows) return err(res,409,'Không thể thực hiện thao tác với trạng thái hiện tại');
   res.json({ok:true,status:rule.status});
 });

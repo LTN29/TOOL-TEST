@@ -27,6 +27,7 @@ function classifyError(e){
   if(/checkpoint/i.test(s)) return 'CHECKPOINT';
   if(/session|login|authenticated/i.test(s)) return 'SESSION_EXPIRED';
   if(/selector|comment box/i.test(s)) return 'SELECTOR_FAILED';
+  if(/submit|send button/i.test(s)) return 'SUBMIT_UNCONFIRMED';
   if(/timeout/i.test(s)) return 'TIMEOUT';
   if(/net::|network|ERR_/i.test(s)) return 'NETWORK_ERROR';
   return 'UNKNOWN_ERROR';
@@ -43,6 +44,48 @@ async function classifyPage(page){
   const loginInput=page.locator('input[name="email"]:visible').first();
   if(await loginInput.count().catch(()=>0)) return 'SESSION_EXPIRED';
   return 'READY';
+}
+
+async function findSendButton(page,box){
+  const labelledSelectors=[
+    'div[role="dialog"] [role="button"][aria-label*="bình luận" i]',
+    'div[role="dialog"] [role="button"][aria-label*="comment" i]',
+    'div[role="dialog"] [role="button"][aria-label*="gửi" i]',
+    'div[role="dialog"] [role="button"][aria-label*="send" i]',
+    'div[role="dialog"] button[aria-label*="bình luận" i]',
+    'div[role="dialog"] button[aria-label*="comment" i]',
+    'div[role="dialog"] button[aria-label*="gửi" i]',
+    'div[role="dialog"] button[aria-label*="send" i]'
+  ];
+  for(const sel of labelledSelectors){
+    const matches=page.locator(`${sel}:visible`);
+    for(let i=(await matches.count().catch(()=>0))-1;i>=0;i--){
+      const candidate=matches.nth(i);
+      if(await candidate.isEnabled().catch(()=>false)) return {locator:candidate,method:`label:${sel}`};
+    }
+  }
+
+  // Facebook frequently removes the accessible name from the blue paper-plane
+  // button. In that case, choose the right-most enabled button on the same row
+  // as the active comment editor. Emoji/GIF buttons are all to its left.
+  const editorRect=await box.boundingBox();
+  if(!editorRect) return null;
+  const candidates=page.locator('div[role="dialog"] button:visible, div[role="dialog"] [role="button"]:visible');
+  let best=null;
+  for(let i=0,count=await candidates.count().catch(()=>0);i<count;i++){
+    const candidate=candidates.nth(i);
+    if(!await candidate.isEnabled().catch(()=>false)) continue;
+    const rect=await candidate.boundingBox().catch(()=>null);
+    if(!rect) continue;
+    const centerY=rect.y+rect.height/2;
+    const centerX=rect.x+rect.width/2;
+    const editorCenterY=editorRect.y+editorRect.height/2;
+    const sameRow=Math.abs(centerY-editorCenterY)<=Math.max(32,editorRect.height/2);
+    const onRight=centerX>editorRect.x+editorRect.width*0.55;
+    const compact=rect.width<=96&&rect.height<=96;
+    if(sameRow&&onRight&&compact&&(!best||centerX>best.centerX)) best={locator:candidate,centerX,method:'geometry:rightmost'};
+  }
+  return best;
 }
 
 app.get('/health',(_req,res)=>res.json({ok:true,workerName,headless,defaultDryRun,busyCount:busyProfiles.size}));
@@ -121,30 +164,25 @@ app.post('/execute',async(req,res)=>{
       await page.waitForTimeout(Math.max(1500,dryRunHoldMs));
       return res.json({ok:true,dryRun:true,workerName,message:'Typed and verified; not submitted'});
     }
-    const sendSelectors=[
-      'div[role="dialog"] [role="button"][aria-label="Bình luận"]',
-      'div[role="dialog"] [role="button"][aria-label="Comment"]',
-      'div[role="dialog"] [role="button"][aria-label="Gửi"]',
-      'div[role="dialog"] [role="button"][aria-label="Send"]',
-      'div[role="dialog"] button[aria-label="Bình luận"]',
-      'div[role="dialog"] button[aria-label="Comment"]'
-    ];
-    let sendButton=null;
-    for(const sel of sendSelectors){
-      const loc=page.locator(`${sel}:visible`).last();
-      if(await loc.count().catch(()=>0)){ sendButton=loc; break; }
-    }
-    if(sendButton) await sendButton.click();
-    else await box.press('Enter');
+    const sendTarget=await findSendButton(page,box);
+    if(!sendTarget) throw new Error('Comment send button not found');
+    console.log(`[run ${runId}] submitting comment via ${sendTarget.method}`);
+    await sendTarget.locator.click({timeout:5000});
 
     let submitted=false;
     for(let i=0;i<12;i++){
       await page.waitForTimeout(500);
-      const remaining=String(await box.textContent().catch(()=>'')).replace(/\s+/g,' ').trim();
-      if(!remaining.includes(expected)){ submitted=true; break; }
+      const editorVisible=await box.isVisible().catch(()=>false);
+      if(!editorVisible){
+        const posted=page.getByText(commentText,{exact:true}).last();
+        if(await posted.isVisible().catch(()=>false)){submitted=true;break;}
+        continue;
+      }
+      const remaining=String(await box.textContent().catch(()=>null)||'').replace(/\s+/g,' ').trim();
+      if(!remaining.includes(expected)){submitted=true;break;}
     }
-    if(!submitted) throw new Error('Comment submit was not confirmed');
-    res.json({ok:true,dryRun:false,workerName,message:sendButton?'Send button clicked and confirmed':'Enter submitted and confirmed'});
+    if(!submitted) throw new Error(`Comment submit was not confirmed after ${sendTarget.method}`);
+    res.json({ok:true,dryRun:false,workerName,message:`Comment submitted and confirmed via ${sendTarget.method}`});
   }catch(e){
     const errorCode=classifyError(e);
     res.status(errorCode==='WORKER_BUSY'?409:500).json({ok:false,errorCode,error:String(e.message||e),workerName});
