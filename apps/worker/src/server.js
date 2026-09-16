@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
-import { chromium } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import {launchProfile} from './profile-login.js';
 
 const app=express();
 app.disable('x-powered-by');
@@ -33,9 +33,7 @@ function classifyError(e){
   return 'UNKNOWN_ERROR';
 }
 async function openProfile(profileKey){
-  const profileDir=path.join(profileRoot,String(profileKey));
-  fs.mkdirSync(profileDir,{recursive:true});
-  return chromium.launchPersistentContext(profileDir,{headless,viewport:{width:1365,height:850},locale:'vi-VN'});
+  return launchProfile(profileKey,{profileRoot,headless});
 }
 async function classifyPage(page){
   const url=page.url();
@@ -203,4 +201,4 @@ app.post('/execute',async(req,res)=>{
   }
 });
 
-app.listen(port,'0.0.0.0',()=>console.log(`Browser Worker v2 ${workerName} listening on :${port}; DRY_RUN=${defaultDryRun}`));
+app.listen(port,'127.0.0.1',()=>console.log(`Browser Worker v2 ${workerName} listening on 127.0.0.1:${port}; DRY_RUN=${defaultDryRun}`));

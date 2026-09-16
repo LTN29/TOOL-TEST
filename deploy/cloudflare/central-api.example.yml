@@ -1,0 +1,8 @@
+# CHƯA KÍCH HOẠT: chỉ dùng sau khi Central API có device auth/revoke.
+# Thay placeholder bằng tunnel/hostname của bạn; không commit credentials thật.
+tunnel: <TUNNEL_ID>
+credentials-file: <ABSOLUTE_PATH_TO_TUNNEL_CREDENTIALS_JSON>
+ingress:
+  - hostname: automation-api.simi.vn
+    service: http://127.0.0.1:4300
+  - service: http_status:404

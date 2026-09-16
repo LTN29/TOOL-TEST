@@ -13,3 +13,8 @@ logs/
 *.zip
 playwright-report/
 test-results/
+/SIMI_AUTOMATION_DESKTOP_MASTER_PROMPT.md
+apps/desktop/node_modules/
+release/
+.env.server
+.env.desktop

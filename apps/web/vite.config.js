@@ -10,5 +10,5 @@ export default defineConfig(({mode})=>{
     headers:env.AUTOMATION_TOKEN?{'x-automation-token':env.AUTOMATION_TOKEN}:{}
   };
   const allowedHosts=['localhost',...(env.APP_ALLOWED_HOSTS||'').split(',').map(x=>x.trim()).filter(Boolean)];
-  return {plugins:[react()],server:{host:'127.0.0.1',port:5173,strictPort:true,allowedHosts,proxy:{'/api':proxy,'/health':proxy}},preview:{host:'127.0.0.1',port:5173,strictPort:true,allowedHosts,proxy:{'/api':proxy,'/health':proxy}}};
+  return {base:'./',plugins:[react()],server:{host:'127.0.0.1',port:5173,strictPort:true,allowedHosts,proxy:{'/api':proxy,'/health':proxy}},preview:{host:'127.0.0.1',port:5173,strictPort:true,allowedHosts,proxy:{'/api':proxy,'/health':proxy}}};
 });

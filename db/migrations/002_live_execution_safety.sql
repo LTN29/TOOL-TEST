@@ -1,12 +1,24 @@
 USE fb_commenter;
 ALTER TABLE comment_jobs
-  MODIFY COLUMN status ENUM('PENDING','RUNNING','SUCCESS','FAILED','UNKNOWN','RETRY_DUE','SKIPPED','PAUSED','CANCELLED') NOT NULL DEFAULT 'PENDING',
-  ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(191) NULL AFTER id,
-  ADD COLUMN IF NOT EXISTS execution_stage VARCHAR(40) NOT NULL DEFAULT 'QUEUED' AFTER dry_run,
-  ADD COLUMN IF NOT EXISTS effective_mode ENUM('DRY_RUN','LIVE') NOT NULL DEFAULT 'DRY_RUN' AFTER execution_stage,
-  ADD COLUMN IF NOT EXISTS submit_at DATETIME NULL AFTER started_at,
-  ADD COLUMN IF NOT EXISTS verified_at DATETIME NULL AFTER submit_at,
-  ADD COLUMN IF NOT EXISTS execution_result VARCHAR(40) NULL AFTER verified_at;
+  MODIFY COLUMN status ENUM('PENDING','RUNNING','SUCCESS','FAILED','UNKNOWN','RETRY_DUE','SKIPPED','PAUSED','CANCELLED') NOT NULL DEFAULT 'PENDING';
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='idempotency_key');
+SET @sql := IF(@has_column=0,'ALTER TABLE comment_jobs ADD COLUMN idempotency_key VARCHAR(191) NULL AFTER id','SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='execution_stage');
+SET @sql := IF(@has_column=0,"ALTER TABLE comment_jobs ADD COLUMN execution_stage VARCHAR(40) NOT NULL DEFAULT 'QUEUED' AFTER dry_run",'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='effective_mode');
+SET @sql := IF(@has_column=0,"ALTER TABLE comment_jobs ADD COLUMN effective_mode ENUM('DRY_RUN','LIVE') NOT NULL DEFAULT 'DRY_RUN' AFTER execution_stage",'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='submit_at');
+SET @sql := IF(@has_column=0,'ALTER TABLE comment_jobs ADD COLUMN submit_at DATETIME NULL AFTER started_at','SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='verified_at');
+SET @sql := IF(@has_column=0,'ALTER TABLE comment_jobs ADD COLUMN verified_at DATETIME NULL AFTER submit_at','SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @has_column := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND column_name='execution_result');
+SET @sql := IF(@has_column=0,'ALTER TABLE comment_jobs ADD COLUMN execution_result VARCHAR(40) NULL AFTER verified_at','SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 UPDATE comment_jobs SET idempotency_key=id WHERE idempotency_key IS NULL OR idempotency_key='';
 ALTER TABLE comment_jobs MODIFY COLUMN idempotency_key VARCHAR(191) NOT NULL;
 SET @has_uq := (SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='comment_jobs' AND index_name='uq_jobs_idempotency');

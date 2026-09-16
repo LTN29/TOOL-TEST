@@ -67,9 +67,17 @@ app.get('/api/campaigns', async (_req,res) => {
 app.post('/api/campaigns', async (req,res) => {
   const {name,startsAt=null,endsAt=null,cooldownMinutes=180,maxCommentsPerAccountPerDay=8,dryRun=true}=req.body;
   if(!name?.trim()) return err(res,400,'name is required');
-  const [r]=await pool.query(`INSERT INTO campaigns(name,starts_at,ends_at,cooldown_minutes,max_comments_per_account_per_day,dry_run)
-    VALUES(?,?,?,?,?,?)`,[name.trim(),startsAt||null,endsAt||null,n(cooldownMinutes,180),n(maxCommentsPerAccountPerDay,8),asBool(dryRun)]);
-  res.status(201).json({id:r.insertId});
+  const conn=await pool.getConnection();
+  try{
+    await conn.beginTransaction();
+    const [r]=await conn.query(`INSERT INTO campaigns(name,starts_at,ends_at,cooldown_minutes,max_comments_per_account_per_day,dry_run)
+      VALUES(?,?,?,?,?,?)`,[name.trim(),startsAt||null,endsAt||null,n(cooldownMinutes,180),n(maxCommentsPerAccountPerDay,8),asBool(dryRun)]);
+    await conn.query(`INSERT INTO comment_groups(campaign_id,name,description) VALUES
+      (?,'Hỏi thông tin','Nhóm gợi ý; thêm câu đã duyệt trước khi tạo lịch'),
+      (?,'Hỏi giá & giao hàng','Nhóm gợi ý; thêm câu đã duyệt trước khi tạo lịch'),
+      (?,'Thể hiện quan tâm','Nhóm gợi ý; thêm câu đã duyệt trước khi tạo lịch')`,[r.insertId,r.insertId,r.insertId]);
+    await conn.commit();res.status(201).json({id:r.insertId});
+  }catch(e){await conn.rollback();throw e}finally{conn.release()}
 });
 
 app.patch('/api/campaigns/:id', async (req,res) => {
@@ -163,11 +171,11 @@ app.get('/api/posts/:id/accounts', async (req,res) => {
   res.json(rows);
 });
 
-async function chooseTemplate(conn,campaignId,postId) {
+async function chooseTemplate(conn,campaignId,postId,groupId=0) {
   const [rows]=await conn.query(`SELECT t.id,t.content FROM comment_templates t
-    WHERE t.campaign_id=? AND t.is_active=1
+    WHERE t.campaign_id=? AND t.is_active=1 AND (?=0 OR t.group_id=?)
     ORDER BY (SELECT COUNT(*) FROM comment_jobs j WHERE j.post_id=? AND j.template_id=t.id AND j.status='SUCCESS') ASC,
-             RAND()/GREATEST(t.weight,1) ASC LIMIT 1`,[campaignId,postId]);
+             RAND()/GREATEST(t.weight,1) ASC LIMIT 1`,[campaignId,groupId,groupId,postId]);
   return rows[0]||null;
 }
 
@@ -178,6 +186,7 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
   const minGap=Math.max(0,n(req.body.minGapMinutes,10));
   const maxGap=Math.max(minGap,n(req.body.maxGapMinutes,30));
   const requestedTemplateId=n(req.body.templateId,0);
+  const requestedGroupId=n(req.body.groupId,0);
   const startAt=req.body.startAt ? new Date(req.body.startAt) : new Date();
   if(Number.isNaN(startAt.getTime())) return err(res,400,'invalid startAt');
 
@@ -191,49 +200,85 @@ app.post('/api/posts/:id/assign-accounts', async (req,res) => {
     for(const accountId of accountIds) {
       const [[account]]=await conn.query('SELECT id FROM fb_accounts WHERE id=? AND is_active=1',[accountId]);
       if(!account) continue;
+      const [[existingJob]]=await conn.query('SELECT id,status FROM comment_jobs WHERE campaign_id=? AND post_id=? AND account_id=? FOR UPDATE',[post.campaign_id,postId,accountId]);
+      if(existingJob&&existingJob.status!=='PENDING') {const conflict=new Error(`Tài khoản #${accountId} đã có job ${existingJob.status} cho bài này; không tạo lại để tránh trùng bình luận`);conflict.status=409;throw conflict;}
       await conn.query(`INSERT INTO post_accounts(post_id,account_id,is_enabled,scheduled_at) VALUES(?,?,1,?)
         ON DUPLICATE KEY UPDATE is_enabled=1,scheduled_at=VALUES(scheduled_at)`,[postId,accountId,cursor]);
+      await conn.query(`INSERT INTO campaign_accounts(campaign_id,account_id,is_enabled) VALUES(?,?,1)
+        ON DUPLICATE KEY UPDATE is_enabled=1`,[post.campaign_id,accountId]);
+      let groupId=requestedGroupId;
+      if(!groupId){
+        const [[assignedGroup]]=await conn.query(`SELECT cag.group_id FROM campaign_account_groups cag JOIN comment_groups g ON g.id=cag.group_id
+          WHERE cag.campaign_id=? AND cag.account_id=? AND g.is_active=1`,[post.campaign_id,accountId]);
+        groupId=assignedGroup?.group_id||0;
+      }
+      if(!groupId){
+        const [[fallbackGroup]]=await conn.query('SELECT id FROM comment_groups WHERE campaign_id=? AND is_active=1 ORDER BY id LIMIT 1',[post.campaign_id]);
+        groupId=fallbackGroup?.id||0;
+      }
+      if(!groupId) throw new Error('Chiến dịch chưa có nhóm bình luận');
+      const [[validGroup]]=await conn.query('SELECT id FROM comment_groups WHERE id=? AND campaign_id=? AND is_active=1',[groupId,post.campaign_id]);
+      if(!validGroup) throw new Error('Nhóm bình luận không thuộc chiến dịch đã chọn');
+      await conn.query(`INSERT INTO campaign_account_groups(campaign_id,account_id,group_id) VALUES(?,?,?)
+        ON DUPLICATE KEY UPDATE group_id=VALUES(group_id)`,[post.campaign_id,accountId,groupId]);
       let template;
       if(requestedTemplateId){
-        [[template]]=await conn.query('SELECT id,content FROM comment_templates WHERE id=? AND campaign_id=? AND is_active=1',[requestedTemplateId,post.campaign_id]);
-      } else template=await chooseTemplate(conn,post.campaign_id,postId);
+        [[template]]=await conn.query('SELECT id,content FROM comment_templates WHERE id=? AND campaign_id=? AND group_id=? AND is_active=1',[requestedTemplateId,post.campaign_id,groupId]);
+      } else template=await chooseTemplate(conn,post.campaign_id,postId,groupId);
       if(!template) throw new Error('No active comment template for campaign');
       const id=uuidv4();
-      await conn.query(`INSERT INTO comment_jobs(id,idempotency_key,campaign_id,post_id,account_id,template_id,comment_text,status,dry_run,execution_stage,effective_mode,scheduled_at)
-        VALUES(?,?,?,?,?,?,?,'PENDING',?,'QUEUED',?,?)
+      await conn.query(`INSERT INTO comment_jobs(id,idempotency_key,campaign_id,post_id,account_id,template_id,group_id,comment_text,status,dry_run,execution_stage,effective_mode,scheduled_at)
+        VALUES(?,?,?,?,?,?,?,?,'PENDING',?,'QUEUED',?,?)
         ON DUPLICATE KEY UPDATE
           scheduled_at=IF(status IN ('SUCCESS','RUNNING'),scheduled_at,VALUES(scheduled_at)),
           template_id=IF(status IN ('SUCCESS','RUNNING'),template_id,VALUES(template_id)),
+          group_id=IF(status IN ('SUCCESS','RUNNING'),group_id,VALUES(group_id)),
           comment_text=IF(status IN ('SUCCESS','RUNNING'),comment_text,VALUES(comment_text)),
           dry_run=IF(status IN ('SUCCESS','RUNNING'),dry_run,VALUES(dry_run)),
           status=IF(status='SUCCESS','SUCCESS',IF(status='RUNNING','RUNNING','PENDING')),
           attempt_count=IF(status IN ('SUCCESS','RUNNING'),attempt_count,0),
           finished_at=IF(status IN ('SUCCESS','RUNNING'),finished_at,NULL),
           error_code=NULL,error_message=NULL,retry_after=NULL`,
-        [id,id,post.campaign_id,postId,accountId,template.id,template.content,globalDryRun||!!post.campaign_dry_run,(globalDryRun||!!post.campaign_dry_run)?'DRY_RUN':'LIVE',cursor]);
-      created.push({accountId,scheduledAt:cursor.toISOString(),templateId:template.id,commentText:template.content,dryRun:globalDryRun||!!post.campaign_dry_run});
+        [id,id,post.campaign_id,postId,accountId,template.id,groupId,template.content,globalDryRun||!!post.campaign_dry_run,(globalDryRun||!!post.campaign_dry_run)?'DRY_RUN':'LIVE',cursor]);
+      created.push({accountId,groupId,scheduledAt:cursor.toISOString(),templateId:template.id,commentText:template.content,dryRun:globalDryRun||!!post.campaign_dry_run});
       const gap=minGap+Math.floor(Math.random()*(maxGap-minGap+1));
       cursor=new Date(cursor.getTime()+gap*60000);
     }
     await conn.commit();
     res.json({ok:true,assignments:created});
-  } catch(e) { await conn.rollback(); console.error(e); res.status(500).json({error:e.message}); }
+  } catch(e) { await conn.rollback(); console.error(e); res.status(e.status||500).json({error:e.message}); }
   finally { conn.release(); }
 });
 
 app.get('/api/templates', async (req,res) => {
   const campaignId=n(req.query.campaignId,0);
-  const sql=`SELECT t.*,c.name campaign_name,
+  const sql=`SELECT t.*,c.name campaign_name,g.name group_name,
     (SELECT COUNT(*) FROM comment_jobs j WHERE j.template_id=t.id AND j.status='SUCCESS') usage_count
-    FROM comment_templates t JOIN campaigns c ON c.id=t.campaign_id`;
+    FROM comment_templates t JOIN campaigns c ON c.id=t.campaign_id LEFT JOIN comment_groups g ON g.id=t.group_id`;
   const [rows]=campaignId ? await pool.query(`${sql} WHERE t.campaign_id=? ORDER BY t.id DESC`,[campaignId]) : await pool.query(`${sql} ORDER BY t.id DESC`);
   res.json(rows);
 });
 app.post('/api/templates', async (req,res) => {
-  const {campaignId,content,weight=1}=req.body;
-  if(!campaignId||!content?.trim()) return err(res,400,'campaignId and content are required');
-  const [r]=await pool.query('INSERT INTO comment_templates(campaign_id,content,weight) VALUES(?,?,?)',[n(campaignId),content.trim(),Math.max(1,n(weight,1))]);
+  const {campaignId,groupId,content,weight=1}=req.body;
+  if(!campaignId||!groupId||!content?.trim()) return err(res,400,'campaignId, groupId and content are required');
+  const [[group]]=await pool.query('SELECT id FROM comment_groups WHERE id=? AND campaign_id=? AND is_active=1',[n(groupId),n(campaignId)]);
+  if(!group)return err(res,400,'Nhóm bình luận không thuộc chiến dịch');
+  const [r]=await pool.query('INSERT INTO comment_templates(campaign_id,group_id,content,weight) VALUES(?,?,?,?)',[n(campaignId),n(groupId),content.trim(),Math.max(1,n(weight,1))]);
   res.status(201).json({id:r.insertId});
+});
+
+app.get('/api/comment-groups',async(req,res)=>{
+  const campaignId=n(req.query.campaignId,0);
+  const base=`SELECT g.*,c.name campaign_name,(SELECT COUNT(*) FROM comment_templates t WHERE t.group_id=g.id AND t.is_active=1) template_count,
+    (SELECT COUNT(*) FROM campaign_account_groups cag WHERE cag.group_id=g.id) account_count FROM comment_groups g JOIN campaigns c ON c.id=g.campaign_id`;
+  const [rows]=campaignId?await pool.query(`${base} WHERE g.campaign_id=? ORDER BY g.id`,[campaignId]):await pool.query(`${base} ORDER BY g.campaign_id,g.id`);
+  res.json(rows);
+});
+app.post('/api/comment-groups',async(req,res)=>{
+  const {campaignId,name,description=null}=req.body;
+  if(!campaignId||!name?.trim())return err(res,400,'campaignId and name are required');
+  try{const [r]=await pool.query('INSERT INTO comment_groups(campaign_id,name,description) VALUES(?,?,?)',[n(campaignId),name.trim(),description||null]);res.status(201).json({id:r.insertId});}
+  catch(e){if(e.code==='ER_DUP_ENTRY')return err(res,409,'Nhóm này đã tồn tại trong chiến dịch');throw e;}
 });
 
 app.get('/api/jobs', async (req,res) => {
@@ -542,4 +587,5 @@ app.post('/api/automation/account-status', async (req,res) => {
 });
 
 app.use((e,_req,res,_next)=>{ console.error(e); res.status(500).json({error:e.message||'Internal error'}); });
-app.listen(n(process.env.PORT,4300),()=>console.log(`API v2 listening on :${n(process.env.PORT,4300)}`));
+const listenHost=process.env.HOST||'127.0.0.1';
+app.listen(n(process.env.PORT,4300),listenHost,()=>console.log(`API v2 listening on ${listenHost}:${n(process.env.PORT,4300)}`));

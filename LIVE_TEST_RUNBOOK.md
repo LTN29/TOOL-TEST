@@ -28,6 +28,16 @@ API_INTERNAL_URL=http://host.docker.internal:4300
 `DRY_RUN` vẫn là công tắc an toàn chung. Chỉ khi API, Worker và chiến dịch đều hiện
 `CHẠY THẬT`, preflight mới cho bấm xác nhận.
 
+Migration `003_comment_groups.sql` thêm nhóm bình luận, quan hệ tài khoản–chiến dịch–nhóm
+và `group_id` trên từng job. Nội dung cũ được chuyển vào nhóm **Nội dung chung**;
+không xóa hoặc sửa câu/job cũ. Trong giao diện, vào **Nội dung bình luận** để tạo
+nhóm rồi thêm nhiều câu vào từng nhóm. Khi tạo lịch, chọn bài → nhóm → tài khoản;
+hệ thống chọn một câu trong nhóm và lưu bản chụp vào job. Một tài khoản có thể
+thuộc nhiều chiến dịch, nhưng mỗi tài khoản chỉ có một nhóm đang gán trong từng
+chiến dịch. Một tài khoản không thể tạo lại job đã hoàn tất/UNKNOWN cho cùng bài.
+Ba nhóm gợi ý (Hỏi thông tin, Hỏi giá & giao hàng, Thể hiện quan tâm) được tạo sẵn
+với ID riêng cho mỗi chiến dịch; chúng không tự có câu, không tự tạo lịch hay gửi.
+
 ## 2. Trạng thái workflow cho lần thử đầu
 
 - Publish/bật: `02 FB Manual Dispatcher`, `04 FB Worker Watchdog`, `05 FB Session Check`.

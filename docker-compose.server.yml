@@ -1,0 +1,70 @@
+name: simi-central
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-fb_commenter}
+      MYSQL_USER: ${MYSQL_USER:-fbapp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    ports:
+      - "127.0.0.1:${DB_PORT:-3307}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  api:
+    build: ./apps/api
+    restart: unless-stopped
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-fbapp}
+      DB_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE:-fb_commenter}
+      PORT: 4300
+      HOST: 0.0.0.0
+      DRY_RUN: ${DRY_RUN:-true}
+      LIVE_TEST_MAX_JOBS: ${LIVE_TEST_MAX_JOBS:-1}
+      AUTOMATION_TOKEN: ${AUTOMATION_TOKEN:?set AUTOMATION_TOKEN}
+      API_INTERNAL_URL: http://api:4300
+      N8N_HEALTH_URL: http://n8n:5678/healthz
+      N8N_MANUAL_WEBHOOK_URL: http://n8n:5678/webhook/fb-comment-now
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+    ports:
+      - "127.0.0.1:4300:4300"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4300/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  n8n:
+    image: n8nio/n8n:2.38.6
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Ho_Chi_Minh}
+      GENERIC_TIMEZONE: ${TZ:-Asia/Ho_Chi_Minh}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY}
+      AUTOMATION_TOKEN: ${AUTOMATION_TOKEN:?set AUTOMATION_TOKEN}
+      N8N_SECURE_COOKIE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  mysql-data:
+  n8n-data:

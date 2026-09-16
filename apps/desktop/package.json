@@ -1,0 +1,34 @@
+{
+  "name": "simi-automation-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "build": "electron-builder --dir",
+    "build:mac": "electron-builder --mac --arm64"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "vn.simi.automation",
+    "productName": "SIMI Automation",
+    "asar": true,
+    "directories": {"output": "../../release/desktop"},
+    "files": ["src/**/*", "package.json"],
+    "extraResources": [
+      {"from": "../web/dist", "to": "renderer"},
+      {"from": "../../docker-compose.n8n.yml", "to": "docker-compose.n8n.yml"},
+      {"from": "../../db/init.sql", "to": "db/init.sql"},
+      {"from": "../../n8n", "to": "n8n", "filter": ["*.json"]},
+      {"from": "../api", "to": "backend/api", "filter": ["src/**", "package.json"]},
+      {"from": "../api/node_modules", "to": "backend/api/node_modules", "filter": ["**/*"]},
+      {"from": "../worker", "to": "backend/worker", "filter": ["src/**", "package.json"]},
+      {"from": "../worker/node_modules", "to": "backend/worker/node_modules", "filter": ["**/*"]}
+    ],
+    "mac": {"category": "public.app-category.productivity", "target": [{"target": "dir", "arch": ["arm64"]}, {"target": "dmg", "arch": ["arm64"]}]},
+    "artifactName": "SIMI-Automation-${version}-${arch}.${ext}"
+  }
+}
