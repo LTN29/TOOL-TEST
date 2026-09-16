@@ -227,9 +227,10 @@ app.post('/api/templates', async (req,res) => {
 
 app.get('/api/jobs', async (req,res) => {
   const limit=Math.min(500,Math.max(1,n(req.query.limit,100)));
-  const [rows]=await pool.query(`SELECT j.*,c.name campaign_name,p.label post_label,p.post_url,a.name account_name,a.profile_key
+  const [rows]=await pool.query(`SELECT j.*,c.name campaign_name,c.dry_run campaign_dry_run,
+    (? OR c.dry_run) effective_dry_run,p.label post_label,p.post_url,a.name account_name,a.profile_key
     FROM comment_jobs j JOIN campaigns c ON c.id=j.campaign_id JOIN posts p ON p.id=j.post_id JOIN fb_accounts a ON a.id=j.account_id
-    ORDER BY j.scheduled_at DESC LIMIT ?`,[limit]);
+    ORDER BY j.scheduled_at DESC LIMIT ?`,[globalDryRun?1:0,limit]);
   res.json(rows);
 });
 
@@ -300,12 +301,17 @@ app.post('/api/automation/manual', async (req,res) => {
 app.post('/api/automation/run-now', async (req,res) => {
   const {postId,accountId}=req.body;
   if(!postId||!accountId) return err(res,400,'postId and accountId are required');
-  const [[job]]=await pool.query('SELECT id,status,dry_run FROM comment_jobs WHERE post_id=? AND account_id=?',[n(postId),n(accountId)]);
+  const [[job]]=await pool.query(`SELECT j.id,j.status,j.dry_run,c.dry_run campaign_dry_run
+    FROM comment_jobs j JOIN campaigns c ON c.id=j.campaign_id
+    WHERE j.post_id=? AND j.account_id=?`,[n(postId),n(accountId)]);
   if(!job) return err(res,404,'Không tìm thấy lượt bình luận');
+  const effectiveDryRun=globalDryRun||!!job.campaign_dry_run;
   if(job.status==='SUCCESS'&&!job.dry_run) return err(res,409,'Tài khoản này đã hoàn thành bài viết');
   if(job.status==='RUNNING') return err(res,409,'Lượt bình luận đang được xử lý');
   if(job.dry_run&&['SUCCESS','SKIPPED','FAILED'].includes(job.status)) {
-    await pool.query("UPDATE comment_jobs SET status='PENDING',scheduled_at=NOW(),attempt_count=0,retry_after=NULL,error_code=NULL,error_message=NULL WHERE id=?",[job.id]);
+    await pool.query("UPDATE comment_jobs SET status='PENDING',dry_run=?,scheduled_at=NOW(),attempt_count=0,retry_after=NULL,error_code=NULL,error_message=NULL WHERE id=?",[effectiveDryRun,job.id]);
+  } else if(!!job.dry_run!==effectiveDryRun) {
+    await pool.query('UPDATE comment_jobs SET dry_run=? WHERE id=?',[effectiveDryRun,job.id]);
   }
   const apiHeaders={'Content-Type':'application/json',...(automationToken?{'x-automation-token':automationToken}:{})};
   const apiBase=`http://127.0.0.1:${n(process.env.PORT,4300)}`;
