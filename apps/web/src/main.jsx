@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Activity,AlertTriangle,CheckCircle2,Clock3,ExternalLink,Pause,Play,Plus,RefreshCw,RotateCcw,Server,Square,WifiOff} from 'lucide-react';
 import CommentGroups from './CommentGroups.jsx';
-import {DesktopStatus,NextJob,AutomationPanel,LogsPanel,SettingsPanel,FacebookDesktop} from './DesktopPanels.jsx';
+import {DesktopStatus,NextJob,AutomationPanel,LogsPanel,SettingsPanel,FacebookDesktop,ConnectPanel} from './DesktopPanels.jsx';
 import './styles.css';
 
 const API=import.meta.env.VITE_API_BASE||'';
@@ -22,15 +22,17 @@ function Table({heads,children,empty='Chưa có dữ liệu'}){return <div class
 function Field({label,hint,children}){return <label className="field"><span>{label}</span>{children}{hint&&<small>{hint}</small>}</label>}
 
 function App(){
- const [tab,setTab]=useState('overview');const [data,setData]=useState({dash:{},campaigns:[],accounts:[],posts:[],templates:[],groups:[],jobs:[],workers:[],system:null});const [loading,setLoading]=useState(true);const [error,setError]=useState('');const [notice,setNotice]=useState('');
- useEffect(()=>{if(window.simiDesktop)window.simiDesktop.getSystemStatus().then(status=>{if(!status.deviceAuthenticated)setTab('settings')}).catch(()=>setTab('settings'))},[]);
+ const [tab,setTab]=useState('overview');const [data,setData]=useState({dash:{},campaigns:[],accounts:[],posts:[],templates:[],groups:[],jobs:[],workers:[],system:null});const [loading,setLoading]=useState(true);const [error,setError]=useState('');const [notice,setNotice]=useState('');const [connected,setConnected]=useState(window.simiDesktop?null:true);
+ useEffect(()=>{if(window.simiDesktop)window.simiDesktop.getSystemStatus().then(status=>setConnected(status.deviceAuthenticated)).catch(()=>setConnected(false))},[]);
  async function load(silent=true){if(!silent)setLoading(true);setError('');try{const [dash,campaigns,accounts,posts,templates,groups,jobs,workers]=await Promise.all(['/api/dashboard','/api/campaigns','/api/accounts','/api/posts','/api/templates','/api/comment-groups','/api/jobs?limit=150','/api/workers'].map(req));setData(prev=>({...prev,dash,campaigns,accounts,posts,templates,groups,jobs,workers}));req('/api/system-status').then(system=>setData(prev=>({...prev,system}))).catch(()=>{})}catch(e){setError(e.message)}finally{if(!silent)setLoading(false)}}
- useEffect(()=>{load(false)},[]);
- useEffect(()=>{const timer=setInterval(()=>req('/api/dashboard').then(dash=>setData(p=>({...p,dash}))).catch(()=>{}),10000);return()=>clearInterval(timer)},[]);
- useEffect(()=>{const fast=data.jobs.some(j=>j.status==='RUNNING');const timer=setInterval(()=>req('/api/jobs?limit=150').then(jobs=>setData(p=>({...p,jobs}))).catch(()=>{}),fast?2500:10000);return()=>clearInterval(timer)},[data.jobs.some(j=>j.status==='RUNNING')]);
- useEffect(()=>{const timer=setInterval(()=>req('/api/system-status').then(system=>setData(p=>({...p,system}))).catch(()=>{}),30000);return()=>clearInterval(timer)},[]);
+ useEffect(()=>{if(connected)load(false)},[connected]);
+ useEffect(()=>{if(!connected)return;const timer=setInterval(()=>req('/api/dashboard').then(dash=>setData(p=>({...p,dash}))).catch(()=>{}),10000);return()=>clearInterval(timer)},[connected]);
+ useEffect(()=>{if(!connected)return;const fast=data.jobs.some(j=>j.status==='RUNNING');const timer=setInterval(()=>req('/api/jobs?limit=150').then(jobs=>setData(p=>({...p,jobs}))).catch(()=>{}),fast?2500:10000);return()=>clearInterval(timer)},[connected,data.jobs.some(j=>j.status==='RUNNING')]);
+ useEffect(()=>{if(!connected)return;const timer=setInterval(()=>req('/api/system-status').then(system=>setData(p=>({...p,system}))).catch(()=>{}),30000);return()=>clearInterval(timer)},[connected]);
  const tell=m=>{setNotice(m);setTimeout(()=>setNotice(''),4000)};
  const desktop=!!window.simiDesktop;
+ if(desktop&&connected===null)return <div className="connect-page">Đang kiểm tra kết nối…</div>;
+ if(desktop&&!connected)return <ConnectPanel onConnected={()=>setConnected(true)}/>;
  const nav=[['overview','Tổng quan'],['posts','Bài viết'],['accounts','Facebook'],['templates','Bình luận'],['campaigns','Chiến dịch'],['jobs','Hàng chờ'],['system','Hệ thống'],...(desktop?[['automation','Automation'],['logs','Nhật ký'],['settings','Cài đặt']]:[])];
  const localTab=['automation','logs','settings'].includes(tab);
  return <div className={desktop?'desktop-frame':'shell'}>

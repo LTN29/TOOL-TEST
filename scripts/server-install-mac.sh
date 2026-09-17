@@ -5,6 +5,7 @@ cd "$ROOT"
 if [[ "$(uname -s)" != Darwin ]]; then echo "Chỉ chạy script cài server này trên macOS." >&2; exit 1; fi
 for tool in git docker openssl; do command -v "$tool" >/dev/null || { echo "Thiếu $tool" >&2; exit 1; }; done
 docker info >/dev/null 2>&1 || { echo "Docker Desktop chưa chạy. Hãy mở Docker Desktop trước." >&2; exit 1; }
+mkdir -p updates
 if [[ ! -f .env.server ]]; then
   cp .env.server.example .env.server
   chmod 600 .env.server

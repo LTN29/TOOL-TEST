@@ -8,10 +8,11 @@ if grep -Eq '^DRY_RUN=false[[:space:]]*$' .env.server; then
   exit 1
 fi
 docker info >/dev/null 2>&1 || { echo "Docker Desktop chưa chạy" >&2; exit 1; }
+mkdir -p updates
 compose=(docker compose --env-file .env.server -f docker-compose.server.yml)
 "${compose[@]}" up -d --build --wait mysql api
 bash scripts/server-migrate.sh
 "${compose[@]}" up -d --wait n8n
 curl --fail --silent --show-error http://127.0.0.1:4300/health
 echo
-echo "Central services chạy local-only. CHƯA mở Cloudflare Tunnel hoặc Publish workflow."
+echo "Central services bind local-only; Cloudflare Tunnel (nếu có) được quản lý riêng. Script này không Publish n8n workflow."

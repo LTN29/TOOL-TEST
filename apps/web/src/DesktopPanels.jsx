@@ -7,13 +7,16 @@ const stateLabel={RUNNING:'Hoạt động',STARTING:'Đang khởi động',RESTA
 
 export function DesktopStatus(){
   const [status,setStatus]=useState(null);
+  const [update,setUpdate]=useState(null);
   useEffect(()=>{
     if(!desktop())return;
     const refresh=()=>desktop().getSystemStatus().then(setStatus).catch(()=>{});
+    desktop().getUpdateStatus().then(setUpdate).catch(()=>{});
+    const unsubscribe=desktop().onUpdateStatus(setUpdate);
     refresh();const timer=setInterval(refresh,30000);
-    return()=>clearInterval(timer);
+    return()=>{clearInterval(timer);unsubscribe()};
   },[]);
-  return <div className="desktop-status">{[['Central API',status?.centralApi],['Worker máy này',status?.worker?.state]].map(([name,value])=><div key={name}><i className={value==='RUNNING'?'on':''}/><span>{name}</span><small>{stateLabel[value]||'Đang kiểm tra'}</small></div>)}</div>;
+  return <div className="desktop-status">{[['Central API',status?.centralApi],['Worker máy này',status?.worker?.state]].map(([name,value])=><div key={name}><i className={value==='RUNNING'?'on':''}/><span>{name}</span><small>{stateLabel[value]||'Đang kiểm tra'}</small></div>)}{['available','downloading','ready'].includes(update?.phase)&&<div><i className="on"/><span>Bản mới {update.latestVersion}</span><small>{update.phase==='ready'?'Sẵn sàng cài':'Vào Cài đặt'}</small></div>}</div>;
 }
 
 export function NextJob({jobs,go}){
@@ -39,14 +42,54 @@ export function LogsPanel(){
   return <section className="panel"><div className="panel-head"><div><h2>Nhật ký</h2><p>Log API, Worker và ứng dụng hiện tại. Không chứa mật khẩu Facebook.</p></div><button className="secondary" onClick={()=>setRaw(!raw)}>{raw?'Xem dễ đọc':'Xem log kỹ thuật'}</button></div><div className="log-filters">{['TẤT CẢ','API','WORKER','DESKTOP'].map(name=><button key={name} className={filter===name?'active':''} onClick={()=>setFilter(name)}>{name}</button>)}</div><div className="log-list">{visible.length?visible.map((row,index)=><div key={`${row.at}-${index}`}><time>{fmt(row.at)}</time><b>{row.source}</b><span>{raw?row.message:row.message.replace(/^\[[^\]]+\]\s*/, '')}</span></div>):<p>Chưa có log trong phiên này.</p>}</div></section>;
 }
 
+export function ConnectPanel({onConnected}){
+  const [key,setKey]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [manual,setManual]=useState({serverUrl:'http://127.0.0.1:4300',workerKey:'',deviceName:'',activationCode:''});
+  async function connect(event){event.preventDefault();setError('');setBusy(true);try{await desktop().pairDevice(key);setKey('');onConnected()}catch(e){setError(e.message)}finally{setBusy(false)}}
+  async function register(event){event.preventDefault();setError('');setBusy(true);try{await desktop().registerDevice(manual);setManual(current=>({...current,activationCode:''}));onConnected()}catch(e){setError(e.message)}finally{setBusy(false)}}
+  return <div className="connect-page"><div className="connect-card"><span className="eyebrow">SIMI AUTOMATION</span><h1>Kết nối ứng dụng</h1><p>Dán mã kết nối được tạo trên máy chủ. Bạn chỉ làm bước này một lần; lần sau mở app sẽ vào thẳng màn hình chính.</p><form onSubmit={connect}><label className="field"><span>Mã kết nối</span><input autoFocus type="password" autoComplete="off" spellCheck="false" placeholder="SIMI1.…" value={key} onChange={event=>setKey(event.target.value)}/></label><button disabled={busy||!key.trim()} type="submit">{busy?'Đang kết nối…':'Kết nối và mở app'}</button></form>{error&&<p className="desktop-message" role="alert">{error}</p>}<small>Mã có hiệu lực 10 phút và chỉ dùng một lần. Máy Windows cần truy cập được địa chỉ server trong mã; 127.0.0.1 chỉ dành cho chính Mac mini.</small><div className="actions"><button className="secondary" disabled={busy} onClick={()=>desktop().getSystemStatus().then(s=>s.deviceAuthenticated?onConnected():setError('Chưa kết nối được server. Kiểm tra mạng hoặc dán mã mới.')).catch(e=>setError(e.message))}>Thử kết nối lại</button></div><details className="manual-connect"><summary>Thiết lập máy chủ đầu tiên (nâng cao)</summary><p>Chỉ dùng khi chưa có máy nào được ghép để tạo mã.</p><form onSubmit={register}>{[['serverUrl','Server URL'],['workerKey','Worker key'],['deviceName','Tên máy'],['activationCode','Mã kích hoạt gốc']].map(([field,label])=><label className="field" key={field}><span>{label}</span><input type={field==='activationCode'?'password':'text'} required value={manual[field]} onChange={e=>setManual({...manual,[field]:e.target.value})}/></label>)}<button type="submit" disabled={busy}>Đăng ký máy đầu tiên</button></form></details></div></div>;
+}
+
 export function SettingsPanel(){
-  const [values,setValues]=useState(null);const [status,setStatus]=useState(null);const [message,setMessage]=useState('');const [activationCode,setActivationCode]=useState('');const [registering,setRegistering]=useState(false);
+  const [values,setValues]=useState(null);const [status,setStatus]=useState(null);const [message,setMessage]=useState('');const [saveMessage,setSaveMessage]=useState('');const [activationCode,setActivationCode]=useState('');const [registering,setRegistering]=useState(false);const [publicUrl,setPublicUrl]=useState('');const [pairingKey,setPairingKey]=useState('');const [creating,setCreating]=useState(false);
   useEffect(()=>{desktop().getSettings().then(setValues);desktop().getSystemStatus().then(setStatus)},[]);
   if(!values)return <section className="panel">Đang tải cài đặt…</section>;
   const fields=[['startWorker','Tự khởi động Worker'],['continueOnClose','Tiếp tục chạy khi đóng cửa sổ'],['openAtLogin','Tự mở cùng macOS']];
-  async function save(){try{setValues(await desktop().saveSettings(values));setMessage('Đã lưu cài đặt.')}catch(e){setMessage(e.message)}}
-  async function register(){setRegistering(true);try{await desktop().registerDevice({...values,activationCode});setStatus(await desktop().getSystemStatus());setMessage('Đã đăng ký thiết bị và khởi động Worker.');setActivationCode('');window.location.reload()}catch(e){setMessage(e.message)}finally{setRegistering(false)}}
-  return <><section className="panel"><h2>Kết nối Central Server</h2><p className="muted">Nhập địa chỉ Central API và mã kích hoạt một lần. Worker sẽ tự kết nối khi mở ứng dụng.</p><div className="form-grid three"><label className="field"><span>Server URL</span><input value={values.serverUrl||''} onChange={e=>setValues({...values,serverUrl:e.target.value})}/></label><label className="field"><span>Worker key</span><input placeholder="pc-sale-01" value={values.workerKey||''} onChange={e=>setValues({...values,workerKey:e.target.value})}/></label><label className="field"><span>Tên máy</span><input placeholder="PC Kinh Doanh 01" value={values.deviceName||''} onChange={e=>setValues({...values,deviceName:e.target.value})}/></label></div><div className="actions"><input className="activation-input" placeholder="Mã kích hoạt thiết bị" value={activationCode} onChange={e=>setActivationCode(e.target.value)}/><button disabled={registering||!activationCode} onClick={register}>{registering?'Đang đăng ký…':'Đăng ký thiết bị'}</button></div><p className="muted">Trạng thái: {status?.deviceAuthenticated?'Đã kết nối API':status?.deviceRegistered?'Đã lưu thiết bị, API chưa xác thực':'Chưa đăng ký'}</p></section><section className="panel"><h2>Cài đặt desktop</h2><p className="muted">Worker và phiên Facebook nằm trên máy này; không cần Docker hay API local.</p><div className="settings-list">{fields.map(([key,label])=><label key={key}><input type="checkbox" checked={!!values[key]} onChange={e=>setValues({...values,[key]:e.target.checked})}/><span>{label}</span></label>)}</div><div className="actions"><button onClick={save}>Lưu cài đặt</button></div>{message&&<p className="desktop-message">{message}</p>}</section></>;
+  async function save(){try{setValues(await desktop().saveSettings(values));setSaveMessage('Đã lưu cài đặt.')}catch(e){setSaveMessage(e.message)}}
+  async function register(){
+    setMessage('');
+    if(!/^[A-Za-z0-9_-]{3,120}$/.test(values.workerKey||'')){
+      setMessage('Worker key chỉ được dùng chữ, số, dấu gạch ngang hoặc gạch dưới; không có khoảng trắng.');
+      return;
+    }
+    setRegistering(true);
+    try{
+      await desktop().registerDevice({...values,activationCode});
+      setStatus(await desktop().getSystemStatus());
+      setMessage('Đã đăng ký thiết bị và khởi động Worker.');
+      setActivationCode('');
+      window.location.reload();
+    }catch(e){
+      setMessage(/fetch failed|network|timed out|aborted/i.test(e.message)
+        ? 'Không kết nối được Central API. Trên máy khác Mac mini, không dùng 127.0.0.1; hãy nhập URL truy cập được từ máy này.'
+        : e.message);
+    }finally{setRegistering(false)}
+  }
+  async function createPairingKey(){setMessage('');setPairingKey('');setCreating(true);try{const result=await desktop().requestApi('/api/devices/pairing-keys',{method:'POST',body:JSON.stringify({serverUrl:publicUrl.trim()})});if(!result.ok)throw new Error(result.data?.error||'Không tạo được mã');setPairingKey(result.data.key)}catch(e){setMessage(e.message)}finally{setCreating(false)}}
+  return <><section className="panel"><h2>Máy đã kết nối</h2><p className="muted">{status?.deviceAuthenticated?'Đang kết nối Central Server':'Không xác thực được. Kiểm tra kết nối hoặc dùng mã mới.'} · {values.deviceName||values.workerKey} · {values.serverUrl}</p></section><section className="panel"><h2>Thêm máy khác</h2><p className="muted">Tạo mã một lần trên máy đang kết nối, chuyển mã cho máy mới rồi dán vào màn hình mở app. Không gửi mã cho người không được phép quản lý hệ thống.</p><label className="field"><span>Địa chỉ API máy mới truy cập được</span><input type="url" placeholder="https://api.example.com" value={publicUrl} onChange={e=>setPublicUrl(e.target.value)}/><small>Trên Windows, nhập hostname HTTPS của Cloudflare Tunnel đang trỏ tới API trên Mac mini; không dùng 127.0.0.1.</small></label><div className="actions"><button disabled={creating||!publicUrl.trim()||!status?.deviceAuthenticated} onClick={createPairingKey}>{creating?'Đang tạo…':'Tạo mã kết nối'}</button></div>{pairingKey&&<div className="pairing-output"><b>Mã dùng một lần · hết hạn sau 10 phút</b><code>{pairingKey}</code><button className="secondary" onClick={()=>navigator.clipboard.writeText(pairingKey).then(()=>setMessage('Đã sao chép mã')).catch(()=>setMessage('Hãy chọn và sao chép mã thủ công'))}>Sao chép</button></div>}{message&&<p className="desktop-message" role="status">{message}</p>}</section><UpdatesPanel/><section className="panel"><h2>Cài đặt desktop</h2><p className="muted">Worker và phiên Facebook nằm trên máy này; không cần Docker hay API local.</p><div className="settings-list">{fields.map(([key,label])=><label key={key}><input type="checkbox" checked={!!values[key]} onChange={e=>setValues({...values,[key]:e.target.checked})}/><span>{label}</span></label>)}</div><div className="actions"><button onClick={save}>Lưu cài đặt</button></div>{saveMessage&&<p className="desktop-message" role="status">{saveMessage}</p>}</section><details className="panel"><summary>Thiết lập thủ công (nâng cao)</summary><p className="muted">Chỉ dùng để khôi phục thiết bị cũ; thông thường hãy dùng mã kết nối bên trên.</p><div className="form-grid three"><label className="field"><span>Server URL</span><input value={values.serverUrl||''} onChange={e=>setValues({...values,serverUrl:e.target.value})}/></label><label className="field"><span>Worker key</span><input value={values.workerKey||''} onChange={e=>setValues({...values,workerKey:e.target.value})}/></label><label className="field"><span>Tên máy</span><input value={values.deviceName||''} onChange={e=>setValues({...values,deviceName:e.target.value})}/></label></div><div className="actions"><input className="activation-input" placeholder="Mã kích hoạt thiết bị" type="password" value={activationCode} onChange={e=>setActivationCode(e.target.value)}/><button disabled={registering||!activationCode} onClick={register}>{registering?'Đang đăng ký…':'Đăng ký thủ công'}</button></div></details></>;
+}
+
+function UpdatesPanel(){
+  const [update,setUpdate]=useState(null);
+  useEffect(()=>{
+    desktop().getUpdateStatus().then(setUpdate).catch(()=>{});
+    return desktop().onUpdateStatus(setUpdate);
+  },[]);
+  async function action(method){
+    try{setUpdate(await desktop()[method]())}
+    catch(error){setUpdate(current=>({...current,phase:'error',message:error.message}))}
+  }
+  const busy=['checking','downloading'].includes(update?.phase);
+  return <section className="panel"><div className="panel-head"><div><h2>Cập nhật ứng dụng</h2><p>App tự kiểm tra định kỳ. Chỉ tải bộ cài từ Central Server đã đăng ký và xác minh SHA-256 trước khi mở.</p></div><button className="secondary" disabled={busy} onClick={()=>action('checkForUpdates')}><RefreshCw size={15}/>Kiểm tra</button></div><p>Phiên bản đang dùng: <b>{update?.currentVersion||'—'}</b>{update?.latestVersion&&<> · Bản trên máy chủ: <b>{update.latestVersion}</b></>}</p>{update?.message&&<p className="desktop-message" role="status">{update.message}</p>}{update?.phase==='downloading'&&<progress value={update.progress} max="100" aria-label="Tiến độ tải bản cập nhật"/>}<div className="actions">{update?.phase==='available'&&<button onClick={()=>action('downloadUpdate')}>Tải bản mới</button>}{update?.phase==='ready'&&<button onClick={()=>action('openUpdateInstaller')}>Mở bộ cài đã tải</button>}</div><p className="muted">Chỉ cài khi bạn xác nhận. Trên macOS, bộ cài DMG cần mở và thay app thủ công cho đến khi có ký số.</p></section>;
 }
 
 export function FacebookDesktop({accounts,children,reload}){

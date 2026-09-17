@@ -3,6 +3,8 @@ import express from 'express';
 import mysql from 'mysql2/promise';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'node:crypto';
+import {createReadStream} from 'node:fs';
+import {loadDesktopUpdate} from './desktop-updates.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -26,8 +28,10 @@ const n = (v, d=0) => Number.isFinite(Number(v)) ? Number(v) : d;
 const liveTestMaxJobs = Math.max(1,n(process.env.LIVE_TEST_MAX_JOBS,1));
 const n8nManualWebhook = process.env.N8N_MANUAL_WEBHOOK_URL || 'http://127.0.0.1:5678/webhook/fb-comment-now';
 const deviceActivationCode=String(process.env.DEVICE_ACTIVATION_CODE||'').trim();
+const desktopUpdatesDir=process.env.DESKTOP_UPDATES_DIR||'/app/updates';
 const hashToken=value=>crypto.createHash('sha256').update(String(value)).digest('hex');
 const makeDeviceToken=()=>`simi_${crypto.randomBytes(32).toString('hex')}`;
+const pairingUrl=value=>{try{const url=new URL(String(value||''));if(url.username||url.password||url.pathname!=='/'||url.search||url.hash)return null;if(url.protocol!=='https:'&&!(url.protocol==='http:'&&['127.0.0.1','localhost'].includes(url.hostname)))return null;return url.origin}catch{return null}};
 const err = (res, code, message) => res.status(code).json({ error: message });
 const isFacebookUrl=value=>{try{const u=new URL(value);return u.protocol==='https:'&&(u.hostname==='facebook.com'||u.hostname.endsWith('.facebook.com'))}catch{return false}};
 
@@ -49,12 +53,61 @@ async function deviceContext(req){const supplied=req.get('x-device-token')||Stri
 async function requireDevice(req,res,next){try{const ctx=await deviceContext(req);if(!ctx)return err(res,401,'Device token không hợp lệ');req.device=ctx;next()}catch(e){next(e)}}
 
 app.use('/api',async(req,res,next)=>{
-  if(req.path==='/devices/register'&&req.method==='POST') return next();
+  if(['/devices/register','/devices/pair'].includes(req.path)&&req.method==='POST') return next();
   const device=await deviceContext(req).catch(()=>null);if(device){req.device=device;return next();}
   if(!automationToken) return next();
   const supplied=req.get('x-automation-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');
   if(supplied!==automationToken) return res.status(401).json({error:'Không có quyền truy cập'});
   next();
+});
+
+// A previously enrolled device issues a short-lived, single-use key. The URL is
+// part of the hashed key so a changed destination cannot redeem the same key.
+app.post('/api/devices/pairing-keys',requireDevice,async(req,res)=>{
+  const origin=pairingUrl(req.body?.serverUrl);
+  if(!origin)return err(res,400,'Địa chỉ máy chủ cần là HTTPS (chỉ localhost được dùng HTTP)');
+  const key=`SIMI1.${Buffer.from(origin).toString('base64url')}.${crypto.randomBytes(32).toString('base64url')}`;
+  await pool.query('INSERT INTO device_pairing_keys(key_hash,issued_by_worker_id,expires_at) VALUES(?,?,DATE_ADD(NOW(),INTERVAL 10 MINUTE))',[hashToken(key),req.device.worker_id]);
+  res.status(201).json({key,serverUrl:origin,expiresInSeconds:600});
+});
+
+app.post('/api/devices/pair',async(req,res)=>{
+  const key=String(req.body?.key||'');
+  const parts=key.split('.');
+  if(parts.length!==3||parts[0]!=='SIMI1'||!/^[A-Za-z0-9_-]{40,64}$/.test(parts[2]))return err(res,400,'Mã kết nối không hợp lệ');
+  const origin=pairingUrl(Buffer.from(parts[1],'base64url').toString('utf8'));
+  if(!origin||Buffer.from(origin).toString('base64url')!==parts[1])return err(res,400,'Địa chỉ trong mã kết nối không hợp lệ');
+  const deviceName=String(req.body?.deviceName||'').trim().slice(0,160);
+  if(!deviceName)return err(res,400,'Thiếu tên máy');
+  const token=makeDeviceToken(),workerKey=`desktop-${crypto.randomBytes(12).toString('hex')}`;
+  const conn=await pool.getConnection();
+  try{
+    await conn.beginTransaction();
+    const [[pairing]]=await conn.query('SELECT id FROM device_pairing_keys WHERE key_hash=? AND consumed_at IS NULL AND expires_at>NOW() FOR UPDATE',[hashToken(key)]);
+    if(!pairing){await conn.rollback();return err(res,401,'Mã đã dùng, hết hạn hoặc không đúng. Hãy tạo mã mới')}
+    await conn.query('UPDATE device_pairing_keys SET consumed_at=NOW() WHERE id=?',[pairing.id]);
+    const [worker]=await conn.query(`INSERT INTO worker_nodes(worker_key,name,device_name,os,app_version,base_url,is_enabled,health_status,last_seen_at) VALUES(?,?,?,?,?,'http://127.0.0.1:4311',1,'ONLINE',NOW())`,[workerKey,deviceName,deviceName,String(req.body?.os||'unknown').slice(0,40),String(req.body?.appVersion||'unknown').slice(0,40)]);
+    await conn.query('INSERT INTO device_tokens(worker_id,token_hash) VALUES(?,?)',[worker.insertId,hashToken(token)]);
+    await conn.commit();
+    res.status(201).json({worker:{id:worker.insertId,worker_key:workerKey,device_name:deviceName},deviceToken:token,serverUrl:origin});
+  }catch(e){await conn.rollback();throw e}finally{conn.release()}
+});
+
+app.get('/api/desktop-updates/latest',requireDevice,async(req,res)=>{
+  const update=await loadDesktopUpdate(desktopUpdatesDir,req.query.platform,req.query.arch);
+  if(!update)return err(res,404,'Chưa có bản cập nhật cho máy này');
+  const {version,fileName,sha256,size}=update;
+  res.json({version,fileName,sha256,size});
+});
+app.get('/api/desktop-updates/download',requireDevice,async(req,res)=>{
+  const update=await loadDesktopUpdate(desktopUpdatesDir,req.query.platform,req.query.arch);
+  if(!update)return err(res,404,'Chưa có bản cập nhật cho máy này');
+  res.set({
+    'Content-Type':'application/octet-stream',
+    'Content-Length':String(update.size),
+    'Content-Disposition':`attachment; filename="${update.fileName}"`
+  });
+  createReadStream(update.filePath).on('error',error=>res.destroy(error)).pipe(res);
 });
 
 app.get('/api/dashboard', async (_req,res) => {

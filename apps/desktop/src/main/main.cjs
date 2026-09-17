@@ -2,7 +2,9 @@ const {app,BrowserWindow,Tray,Menu,nativeImage,shell,ipcMain}=require('electron'
 const fs=require('node:fs');
 const path=require('node:path');
 const {ManagedService}=require('./process-manager.cjs');
+const {createUpdateManager}=require('./update-manager.cjs');
 const {pathToFileURL}=require('node:url');
+const os=require('node:os');
 
 if(!app.requestSingleInstanceLock()){app.quit();process.exit(0)}
 const isDev=!app.isPackaged;
@@ -12,12 +14,21 @@ if(!isDev)process.env.PLAYWRIGHT_BROWSERS_PATH=path.join(process.resourcesPath,'
 const userData=app.getPath('userData');
 const settingsFile=path.join(userData,'settings.json');
 const logs=[];
-let window=null,tray=null,quitting=false,worker=null;
+let window=null,tray=null,quitting=false,worker=null,updates=null;
 let loginSession=null,loginWorkerWasRunning=false;
-const defaults={startWorker:true,continueOnClose:true,openAtLogin:false,serverUrl:'http://127.0.0.1:4300',workerKey:'',deviceName:'',deviceOs:process.platform,appVersion:'0.1.0'};
+const defaults={startWorker:true,continueOnClose:true,openAtLogin:false,serverUrl:'http://127.0.0.1:4300',workerKey:'',deviceName:'',deviceOs:process.platform,appVersion:app.getVersion()};
 const tokenFile=path.join(userData,'device-token.bin');
 function getDeviceToken(){try{if(!fs.existsSync(tokenFile)||!require('electron').safeStorage.isEncryptionAvailable())return '';return require('electron').safeStorage.decryptString(fs.readFileSync(tokenFile))}catch{return ''}}
 function saveDeviceToken(token){if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('OS secure storage chưa khả dụng');fs.writeFileSync(tokenFile,require('electron').safeStorage.encryptString(token),{mode:0o600})}
+function pairingServer(key){
+  const parts=String(key||'').trim().split('.');
+  if(parts.length!==3||parts[0]!=='SIMI1'||!/^[A-Za-z0-9_-]{40,64}$/.test(parts[2]))throw new Error('Mã kết nối không hợp lệ');
+  const raw=Buffer.from(parts[1],'base64url').toString('utf8');
+  let url;try{url=new URL(raw)}catch{throw new Error('Địa chỉ máy chủ trong mã không hợp lệ')}
+  if(url.origin!==raw||url.username||url.password||url.search||url.hash||url.pathname!=='/'||url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1'].includes(url.hostname)))throw new Error('Mã chỉ chấp nhận HTTPS; HTTP chỉ dùng trên chính Mac mini');
+  if(Buffer.from(raw).toString('base64url')!==parts[1])throw new Error('Mã kết nối không hợp lệ');
+  return url.origin;
+}
 
 function getSettings(){try{return {...defaults,...JSON.parse(fs.readFileSync(settingsFile,'utf8'))}}catch{return {...defaults}}}
 function writeLog(source,message){
@@ -74,6 +85,10 @@ function registerIpc(){
   });
   ipcMain.handle('simi:status',systemStatus);
   ipcMain.handle('simi:logs',()=>logs.slice(-300));
+  ipcMain.handle('simi:update:status',()=>updates.status());
+  ipcMain.handle('simi:update:check',()=>updates.check());
+  ipcMain.handle('simi:update:download',()=>updates.download());
+  ipcMain.handle('simi:update:open',()=>updates.openInstaller());
   ipcMain.handle('simi:settings:get',getSettings);
   ipcMain.handle('simi:settings:save',(_event,values)=>{
     const current=getSettings();for(const key of Object.keys(defaults))if(typeof values?.[key]==='boolean'||['serverUrl','workerKey','deviceName','deviceOs'].includes(key)&&typeof values?.[key]==='string')current[key]=values[key];
@@ -86,8 +101,23 @@ function registerIpc(){
   ipcMain.handle('simi:device:register',async(_event,values)=>{
     const current=getSettings();const base=String(values?.serverUrl||current.serverUrl||'').replace(/\/$/,'');
     if(!/^https?:\/\//.test(base))throw new Error('Server URL không hợp lệ');
-    const response=await fetch(`${base}/api/devices/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activationCode:values.activationCode,workerKey:values.workerKey,deviceName:values.deviceName,os:values.deviceOs||process.platform,appVersion:values.appVersion||'0.1.0',baseUrl:''}),signal:AbortSignal.timeout(15000)});
-    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Đăng ký thất bại (${response.status})`);saveDeviceToken(data.deviceToken);const next={...current,serverUrl:base,workerKey:values.workerKey,deviceName:values.deviceName,deviceOs:values.deviceOs||process.platform};fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')await worker.restart();return {worker:data.worker,serverUrl:base,workerExternal:worker.owner==='external'};
+    const response=await fetch(`${base}/api/devices/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activationCode:values.activationCode,workerKey:values.workerKey,deviceName:values.deviceName,os:values.deviceOs||process.platform,appVersion:app.getVersion(),baseUrl:''}),signal:AbortSignal.timeout(15000)});
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Đăng ký thất bại (${response.status})`);saveDeviceToken(data.deviceToken);const next={...current,serverUrl:base,workerKey:values.workerKey,deviceName:values.deviceName,deviceOs:values.deviceOs||process.platform};fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')await worker.restart();setTimeout(()=>updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`)),1000);return {worker:data.worker,serverUrl:base,workerExternal:worker.owner==='external'};
+  });
+  ipcMain.handle('simi:device:pair',async(_event,key)=>{
+    const cleanKey=String(key||'').trim();const base=pairingServer(cleanKey);
+    if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('Máy chưa hỗ trợ lưu token an toàn; không thể kết nối');
+    let response;
+    try{response=await fetch(`${base}/api/devices/pair`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:cleanKey,deviceName:os.hostname(),os:process.platform,appVersion:app.getVersion()}),signal:AbortSignal.timeout(15000),redirect:'error'})}
+    catch{throw new Error(`Không tới được ${base}. Máy này cần truy cập được địa chỉ trong mã; 127.0.0.1 chỉ dùng trên Mac mini.`)}
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Kết nối thất bại (${response.status})`);
+    if(!data.deviceToken||data.serverUrl!==base||!data.worker?.worker_key)throw new Error('Máy chủ trả về phiên kết nối không hợp lệ');
+    saveDeviceToken(data.deviceToken);
+    const next={...getSettings(),serverUrl:base,workerKey:data.worker.worker_key,deviceName:data.worker.device_name,deviceOs:process.platform};
+    fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));
+    worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')worker.restart().catch(error=>writeLog('DESKTOP',`Worker: ${error.message}`));
+    setTimeout(()=>updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`)),1000);
+    return {worker:data.worker,serverUrl:base};
   });
   ipcMain.handle('simi:worker:restart',async()=>{await worker.restart();return worker.snapshot()});
   ipcMain.handle('simi:facebook:open-login',async(_event,profileKey)=>{
@@ -127,8 +157,19 @@ function registerIpc(){
 app.on('second-instance',showWindow);
 app.on('before-quit',()=>{quitting=true;loginSession?.context.close().catch(()=>{});worker?.stop()});
 app.whenReady().then(async()=>{
-  fs.mkdirSync(userData,{recursive:true});makeServices();registerIpc();createWindow();
+  fs.mkdirSync(userData,{recursive:true});makeServices();
+  updates=createUpdateManager({
+    app,
+    getServerUrl:()=>getSettings().serverUrl,
+    getDeviceToken,
+    onStatus:status=>window?.webContents.send('simi:update:status-changed',status)
+  });
+  registerIpc();createWindow();
   try{tray=new Tray(trayIcon());updateTray()}catch(error){writeLog('DESKTOP',`Tray chưa khả dụng: ${error.message}`)}
   if(getSettings().startWorker&&getDeviceToken())worker.start();
+  if(getDeviceToken())setTimeout(()=>updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`)),15000);
+  setInterval(()=>{
+    if(getDeviceToken())updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`));
+  },6*60*60*1000).unref();
   app.on('activate',showWindow);
 });
