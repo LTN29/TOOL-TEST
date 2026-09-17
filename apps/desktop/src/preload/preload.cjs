@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('simiDesktop',Object.freeze({
   getSettings:()=>ipcRenderer.invoke('simi:settings:get'),
   saveSettings:settings=>ipcRenderer.invoke('simi:settings:save',settings),
   registerDevice:values=>ipcRenderer.invoke('simi:device:register',values),
-  pairDevice:key=>ipcRenderer.invoke('simi:device:pair',key),
+  pairDevice:(key,access)=>ipcRenderer.invoke('simi:device:pair',key,access),
   restartWorker:()=>ipcRenderer.invoke('simi:worker:restart'),
   openFacebookLogin:profileKey=>ipcRenderer.invoke('simi:facebook:open-login',profileKey),
   completeFacebookLogin:()=>ipcRenderer.invoke('simi:facebook:complete-login')

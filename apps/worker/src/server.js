@@ -19,11 +19,14 @@ const workerName=process.env.WORKER_NAME||'local-worker';
 const automationToken=String(process.env.AUTOMATION_TOKEN||'').trim();
 const deviceToken=String(process.env.DEVICE_TOKEN||'').trim();
 const centralApiUrl=String(process.env.CENTRAL_API_URL||'').replace(/\/$/,'');
+const cloudflareClientId=String(process.env.CF_ACCESS_CLIENT_ID||'').trim();
+const cloudflareClientSecret=String(process.env.CF_ACCESS_CLIENT_SECRET||'').trim();
 const workerPollMs=Math.max(3000,Number(process.env.WORKER_POLL_MS||5000));
 const busyProfiles=new Set();
 fs.mkdirSync(profileRoot,{recursive:true});
 const validProfileKey=value=>/^[a-zA-Z0-9_-]{1,120}$/.test(String(value||''));
 const validFacebookUrl=value=>{try{const u=new URL(value);return u.protocol==='https:'&&(u.hostname==='facebook.com'||u.hostname.endsWith('.facebook.com'))}catch{return false}};
+const centralHeaders=()=>({'Content-Type':'application/json',...(cloudflareClientId&&cloudflareClientSecret?{'CF-Access-Client-Id':cloudflareClientId,'CF-Access-Client-Secret':cloudflareClientSecret}:{}),'x-device-token':deviceToken});
 
 function classifyError(e){
   const s=String(e?.message||e||'');
@@ -129,7 +132,7 @@ app.post('/execute',async(req,res)=>{
   busyProfiles.add(profileKey);
   const effectiveDryRun=defaultDryRun||!!dryRun;
   let ctx; let submitAttempted=false;
-  const apiHeaders={'Content-Type':'application/json',...(deviceToken?{'x-device-token':deviceToken}:automationToken?{'x-automation-token':automationToken}:{})};
+  const apiHeaders={'Content-Type':'application/json',...(cloudflareClientId&&cloudflareClientSecret?{'CF-Access-Client-Id':cloudflareClientId,'CF-Access-Client-Secret':cloudflareClientSecret}:{}),...(deviceToken?{'x-device-token':deviceToken}:automationToken?{'x-automation-token':automationToken}:{})};
   const progress=async stage=>{if(!progressUrl)return;const r=await fetch(progressUrl,{method:'POST',headers:apiHeaders,body:JSON.stringify({stage,idempotencyKey})});if(!r.ok)throw new Error(`Job state changed before ${stage}`)};
   try{
     await progress('OPENING_BROWSER');
@@ -204,8 +207,8 @@ app.post('/execute',async(req,res)=>{
   }
 });
 
-async function reportHeartbeat(currentJobId=null){if(!centralApiUrl||!deviceToken)return;try{const response=await fetch(`${centralApiUrl}/api/workers/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify({currentJobId,defaultDryRun}),signal:AbortSignal.timeout(5000)});if(!response.ok)console.warn(`[worker] heartbeat HTTP ${response.status}`)}catch(e){console.warn(`[worker] heartbeat failed: ${e.message}`)}}
+async function reportHeartbeat(currentJobId=null){if(!centralApiUrl||!deviceToken)return;try{const response=await fetch(`${centralApiUrl}/api/workers/heartbeat`,{method:'POST',headers:centralHeaders(),body:JSON.stringify({currentJobId,defaultDryRun}),signal:AbortSignal.timeout(5000)});if(!response.ok)console.warn(`[worker] heartbeat HTTP ${response.status}`)}catch(e){console.warn(`[worker] heartbeat failed: ${e.message}`)}}
 let activeJobId=null;
 let polling=false;
-async function claimAndExecute(){if(!centralApiUrl||!deviceToken||polling)return;polling=true;try{const r=await fetch(`${centralApiUrl}/api/worker/jobs/claim-next`,{method:'POST',headers:{'x-device-token':deviceToken},signal:AbortSignal.timeout(8000)});if(r.status===204)return;const job=await r.json();if(!r.ok)throw new Error(job.error||`claim HTTP ${r.status}`);activeJobId=job.id;await reportHeartbeat(job.id);const payload={runId:job.runId||job.id,profileKey:job.profile_key,postUrl:job.post_url,commentText:job.comment_text,dryRun:job.dry_run,idempotencyKey:job.idempotency_key,progressUrl:job.progressUrl,guardUrl:job.guardUrl};const local=await fetch(`http://127.0.0.1:${port}/execute`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify(payload),signal:AbortSignal.timeout(120000)});const result=await local.json().catch(()=>({ok:false,errorCode:'UNKNOWN_ERROR',error:`Worker HTTP ${local.status}`}));const report=await fetch(`${centralApiUrl}/api/automation/jobs/${job.id}/result`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify({ok:!!result.ok,skipped:!!result.dryRun,outcome:result.outcome||null,errorCode:result.errorCode||null,errorMessage:result.error||null,idempotencyKey:job.idempotency_key}),signal:AbortSignal.timeout(10000)});if(!report.ok)throw new Error(`result HTTP ${report.status}`);activeJobId=null;await reportHeartbeat(null)}catch(e){console.warn(`[worker] claim/execute failed: ${e.message}`)}finally{polling=false}}
+async function claimAndExecute(){if(!centralApiUrl||!deviceToken||polling)return;polling=true;try{const r=await fetch(`${centralApiUrl}/api/worker/jobs/claim-next`,{method:'POST',headers:centralHeaders(),signal:AbortSignal.timeout(8000)});if(r.status===204)return;const job=await r.json();if(!r.ok)throw new Error(job.error||`claim HTTP ${r.status}`);activeJobId=job.id;await reportHeartbeat(job.id);const payload={runId:job.runId||job.id,profileKey:job.profile_key,postUrl:job.post_url,commentText:job.comment_text,dryRun:job.dry_run,idempotencyKey:job.idempotency_key,progressUrl:job.progressUrl,guardUrl:job.guardUrl};const local=await fetch(`http://127.0.0.1:${port}/execute`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':deviceToken},body:JSON.stringify(payload),signal:AbortSignal.timeout(120000)});const result=await local.json().catch(()=>({ok:false,errorCode:'UNKNOWN_ERROR',error:`Worker HTTP ${local.status}`}));const report=await fetch(`${centralApiUrl}/api/automation/jobs/${job.id}/result`,{method:'POST',headers:centralHeaders(),body:JSON.stringify({ok:!!result.ok,skipped:!!result.dryRun,outcome:result.outcome||null,errorCode:result.errorCode||null,errorMessage:result.error||null,idempotencyKey:job.idempotency_key}),signal:AbortSignal.timeout(10000)});if(!report.ok)throw new Error(`result HTTP ${report.status}`);activeJobId=null;await reportHeartbeat(null)}catch(e){console.warn(`[worker] claim/execute failed: ${e.message}`)}finally{polling=false}}
 app.listen(port,'127.0.0.1',()=>{console.log(`Browser Worker v2 ${workerName} listening on 127.0.0.1:${port}; DRY_RUN=${defaultDryRun}`);if(centralApiUrl&&deviceToken){reportHeartbeat();setInterval(()=>reportHeartbeat(activeJobId),20000);setInterval(claimAndExecute,workerPollMs);console.log(`[worker] outbound polling ${centralApiUrl} every ${workerPollMs}ms`)}});

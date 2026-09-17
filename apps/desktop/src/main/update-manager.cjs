@@ -35,7 +35,7 @@ async function fileHash(file){
   for await(const chunk of fs.createReadStream(file))hash.update(chunk);
   return hash.digest('hex');
 }
-function createUpdateManager({app,getServerUrl,getDeviceToken,onStatus}){
+function createUpdateManager({app,getServerUrl,getDeviceToken,getAccessHeaders=()=>({}),onStatus}){
   const platform=process.platform,arch=process.arch,currentVersion=app.getVersion();
   const supported=(platform==='win32'&&arch==='x64')||(platform==='darwin'&&arch==='arm64');
   let manifest=null,downloadedPath='',busy=false;
@@ -45,7 +45,7 @@ function createUpdateManager({app,getServerUrl,getDeviceToken,onStatus}){
   function credentials(){
     const token=getDeviceToken();
     if(!token)throw new Error('Hãy đăng ký thiết bị trước khi kiểm tra cập nhật');
-    return {base:updateBaseUrl(getServerUrl()),headers:{'x-device-token':token}};
+    return {base:updateBaseUrl(getServerUrl()),headers:{...getAccessHeaders(),'x-device-token':token}};
   }
   async function check(){
     if(busy)throw new Error('Đang tải bản cập nhật');

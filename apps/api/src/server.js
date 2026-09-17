@@ -55,10 +55,9 @@ async function requireDevice(req,res,next){try{const ctx=await deviceContext(req
 app.use('/api',async(req,res,next)=>{
   if(['/devices/register','/devices/pair'].includes(req.path)&&req.method==='POST') return next();
   const device=await deviceContext(req).catch(()=>null);if(device){req.device=device;return next();}
-  if(!automationToken) return next();
   const supplied=req.get('x-automation-token')||String(req.get('authorization')||'').replace(/^Bearer\s+/i,'');
-  if(supplied!==automationToken) return res.status(401).json({error:'Không có quyền truy cập'});
-  next();
+  if(automationToken&&supplied===automationToken)return next();
+  return res.status(401).json({error:'Device token hoặc automation token không hợp lệ'});
 });
 
 // A previously enrolled device issues a short-lived, single-use key. The URL is

@@ -21,7 +21,7 @@ Máy đầu tiên chưa có thiết bị để tạo mã: dùng quy trình đăn
 
 Trước khi cài bản mới, thoát hẳn phiên `desktop:dev` hoặc Worker cũ đang giữ cổng 4311. App không chiếm quyền hay dừng tiến trình ngoài app. Khi đóng cửa sổ, tùy chọn chạy nền giữ Worker tiếp tục hoạt động; **Thoát SIMI Automation** mới dừng Worker do app khởi động.
 
-Central Server bind `127.0.0.1:4300`; Cloudflare Tunnel trên Mac mini có thể chuyển tiếp HTTPS từ máy khác vào cổng này mà không cần mở port công khai. Kiểm tra tunnel đang trỏ đúng API bằng `https://<hostname>/health` trên Windows trước khi tạo mã. App giữ `DRY_RUN=true`; chưa tự bật gửi bình luận thật hoặc Publish n8n workflow. Kiểm tra heartbeat và một job chạy thử trước khi dùng nhiều máy.
+Central Server bind `127.0.0.1:4300`; Cloudflare Tunnel trên Mac mini có thể chuyển tiếp HTTPS từ máy khác vào cổng này mà không cần mở port công khai. Khi Access policy dùng **Service Auth**, tại lần kết nối đầu tiên nhập `CF-Access-Client-Id` và `CF-Access-Client-Secret` của Service Token trong app. Hai giá trị chỉ đi qua Electron main process, được lưu bằng OS secure storage và được thêm vào tất cả request tới Central API; chúng không nằm trong React, settings JSON hay Git. Sau khi đăng ký, Worker dùng Device Token cho heartbeat, claim job, progress/guard và report result. Kiểm tra tunnel đang trỏ đúng API bằng `https://comment.simi.vn/health` trên Windows trước khi tạo mã. App giữ `DRY_RUN=true`; chưa tự bật gửi bình luận thật hoặc Publish n8n workflow. Kiểm tra heartbeat và một job chạy thử trước khi dùng nhiều máy.
 
 ## Cập nhật trong app (từ phiên bản 0.2.0)
 

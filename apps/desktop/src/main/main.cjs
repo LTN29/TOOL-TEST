@@ -18,8 +18,21 @@ let window=null,tray=null,quitting=false,worker=null,updates=null;
 let loginSession=null,loginWorkerWasRunning=false;
 const defaults={startWorker:true,continueOnClose:true,openAtLogin:false,serverUrl:'http://127.0.0.1:4300',workerKey:'',deviceName:'',deviceOs:process.platform,appVersion:app.getVersion()};
 const tokenFile=path.join(userData,'device-token.bin');
+const cloudflareTokenFile=path.join(userData,'cloudflare-service-token.bin');
 function getDeviceToken(){try{if(!fs.existsSync(tokenFile)||!require('electron').safeStorage.isEncryptionAvailable())return '';return require('electron').safeStorage.decryptString(fs.readFileSync(tokenFile))}catch{return ''}}
 function saveDeviceToken(token){if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('OS secure storage chưa khả dụng');fs.writeFileSync(tokenFile,require('electron').safeStorage.encryptString(token),{mode:0o600})}
+function cloudflareCredentials(){
+  const clientId=String(process.env.CF_ACCESS_CLIENT_ID||'').trim(),clientSecret=String(process.env.CF_ACCESS_CLIENT_SECRET||'').trim();
+  if(clientId&&clientSecret)return {clientId,clientSecret};
+  try{if(!fs.existsSync(cloudflareTokenFile)||!require('electron').safeStorage.isEncryptionAvailable())return null;const saved=JSON.parse(require('electron').safeStorage.decryptString(fs.readFileSync(cloudflareTokenFile)));return /^[A-Za-z0-9._-]{8,300}$/.test(saved.clientId||'')&&String(saved.clientSecret||'').length>=16?{clientId:saved.clientId,clientSecret:saved.clientSecret}:null}catch{return null}
+}
+function saveCloudflareCredentials(clientId,clientSecret){
+  if(!clientId&&!clientSecret)return;
+  if(!/^[A-Za-z0-9._-]{8,300}$/.test(String(clientId||''))||String(clientSecret||'').length<16)throw new Error('Cloudflare Service Token không hợp lệ');
+  if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('OS secure storage chưa khả dụng');
+  fs.writeFileSync(cloudflareTokenFile,require('electron').safeStorage.encryptString(JSON.stringify({clientId:String(clientId),clientSecret:String(clientSecret)})),{mode:0o600});
+}
+function cloudflareHeaders(override={}){const credentials=override.clientId&&override.clientSecret?override:cloudflareCredentials();return credentials?{'CF-Access-Client-Id':credentials.clientId,'CF-Access-Client-Secret':credentials.clientSecret}:{}}
 function pairingServer(key){
   const parts=String(key||'').trim().split('.');
   if(parts.length!==3||parts[0]!=='SIMI1'||!/^[A-Za-z0-9_-]{40,64}$/.test(parts[2]))throw new Error('Mã kết nối không hợp lệ');
@@ -36,7 +49,7 @@ function writeLog(source,message){
   if(logs.length>500)logs.splice(0,logs.length-500);
 }
 function changed(){updateTray();window?.webContents.send('simi:status-changed')}
-function backendEnv(port){const settings=getSettings();return {...process.env,PORT:String(port),HOST:'127.0.0.1',PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_BROWSERS_PATH:isDev?(process.env.PLAYWRIGHT_BROWSERS_PATH||''):path.join(process.resourcesPath,'playwright-browsers'),PLAYWRIGHT_CHANNEL:'',DRY_RUN:'true',CENTRAL_API_URL:settings.serverUrl,DEVICE_TOKEN:getDeviceToken(),WORKER_NAME:settings.workerKey||'desktop-worker'}}
+function backendEnv(port){const settings=getSettings(),cf=cloudflareCredentials()||{};return {...process.env,PORT:String(port),HOST:'127.0.0.1',PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_BROWSERS_PATH:isDev?(process.env.PLAYWRIGHT_BROWSERS_PATH||''):path.join(process.resourcesPath,'playwright-browsers'),PLAYWRIGHT_CHANNEL:'',DRY_RUN:'true',CENTRAL_API_URL:settings.serverUrl,DEVICE_TOKEN:getDeviceToken(),CF_ACCESS_CLIENT_ID:cf.clientId||'',CF_ACCESS_CLIENT_SECRET:cf.clientSecret||'',WORKER_NAME:settings.workerKey||'desktop-worker'}}
 function makeServices(){
   worker=new ManagedService({name:'WORKER',port:4311,script:path.join(backendRoot,'worker','src','server.js'),cwd:userData,env:backendEnv(4311),identity:b=>b.ok===true&&typeof b.workerName==='string',onLog:writeLog,onChange:changed});
 }
@@ -44,7 +57,7 @@ async function httpReady(url,headers={}){try{return (await fetch(url,{headers,si
 async function systemStatus(){
   const serverUrl=getSettings().serverUrl.replace(/\/$/,'');
   const token=getDeviceToken();
-  const [centralOnline,deviceAuthenticated]=await Promise.all([httpReady(`${serverUrl}/health`),token?httpReady(`${serverUrl}/api/dashboard`,{'x-device-token':token}):Promise.resolve(false)]);
+  const [centralOnline,deviceAuthenticated]=await Promise.all([httpReady(`${serverUrl}/health`,cloudflareHeaders()),token?httpReady(`${serverUrl}/api/dashboard`,{...cloudflareHeaders(),'x-device-token':token}):Promise.resolve(false)]);
   return {centralApi:centralOnline?'RUNNING':'STOPPED',worker:worker.snapshot(),serverUrl,deviceRegistered:!!token,deviceAuthenticated};
 }
 function showWindow(){if(!window)return;window.show();window.focus();if(process.platform==='darwin')app.dock?.show()}
@@ -80,7 +93,7 @@ function registerIpc(){
     const method=String(options.method||'GET').toUpperCase();if(!['GET','POST','PATCH'].includes(method))throw new Error('Method không hợp lệ');
     const body=options.body===undefined?undefined:String(options.body);if(body&&body.length>1024*1024)throw new Error('Request quá lớn');
     const settings=getSettings();const base=String(settings.serverUrl||'http://127.0.0.1:4300').replace(/\/$/,'');const token=getDeviceToken();
-    const response=await fetch(`${base}${requestPath}`,{method,body,headers:{'Content-Type':'application/json',...(token?{'x-device-token':token}:{})},signal:AbortSignal.timeout(30000),redirect:'error'});
+    const response=await fetch(`${base}${requestPath}`,{method,body,headers:{'Content-Type':'application/json',...cloudflareHeaders(),...(token?{'x-device-token':token}:{})},signal:AbortSignal.timeout(30000),redirect:'error'});
     return {status:response.status,ok:response.ok,data:response.status===204?null:await response.json().catch(()=>({}))};
   });
   ipcMain.handle('simi:status',systemStatus);
@@ -101,18 +114,20 @@ function registerIpc(){
   ipcMain.handle('simi:device:register',async(_event,values)=>{
     const current=getSettings();const base=String(values?.serverUrl||current.serverUrl||'').replace(/\/$/,'');
     if(!/^https?:\/\//.test(base))throw new Error('Server URL không hợp lệ');
-    const response=await fetch(`${base}/api/devices/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activationCode:values.activationCode,workerKey:values.workerKey,deviceName:values.deviceName,os:values.deviceOs||process.platform,appVersion:app.getVersion(),baseUrl:''}),signal:AbortSignal.timeout(15000)});
-    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Đăng ký thất bại (${response.status})`);saveDeviceToken(data.deviceToken);const next={...current,serverUrl:base,workerKey:values.workerKey,deviceName:values.deviceName,deviceOs:values.deviceOs||process.platform};fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')await worker.restart();setTimeout(()=>updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`)),1000);return {worker:data.worker,serverUrl:base,workerExternal:worker.owner==='external'};
+    const cf={clientId:String(values?.cloudflareClientId||'').trim(),clientSecret:String(values?.cloudflareClientSecret||'').trim()};
+    const response=await fetch(`${base}/api/devices/register`,{method:'POST',headers:{'Content-Type':'application/json',...cloudflareHeaders(cf)},body:JSON.stringify({activationCode:values.activationCode,workerKey:values.workerKey,deviceName:values.deviceName,os:values.deviceOs||process.platform,appVersion:app.getVersion(),baseUrl:''}),signal:AbortSignal.timeout(15000),redirect:'error'});
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Đăng ký thất bại (${response.status})`);saveCloudflareCredentials(cf.clientId,cf.clientSecret);saveDeviceToken(data.deviceToken);const next={...current,serverUrl:base,workerKey:values.workerKey,deviceName:values.deviceName,deviceOs:values.deviceOs||process.platform};fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')await worker.restart();setTimeout(()=>updates.check().catch(error=>writeLog('DESKTOP',`Kiểm tra cập nhật: ${error.message}`)),1000);return {worker:data.worker,serverUrl:base,workerExternal:worker.owner==='external'};
   });
-  ipcMain.handle('simi:device:pair',async(_event,key)=>{
+  ipcMain.handle('simi:device:pair',async(_event,key,access={})=>{
     const cleanKey=String(key||'').trim();const base=pairingServer(cleanKey);
     if(!require('electron').safeStorage.isEncryptionAvailable())throw new Error('Máy chưa hỗ trợ lưu token an toàn; không thể kết nối');
     let response;
-    try{response=await fetch(`${base}/api/devices/pair`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:cleanKey,deviceName:os.hostname(),os:process.platform,appVersion:app.getVersion()}),signal:AbortSignal.timeout(15000),redirect:'error'})}
+    const cf={clientId:String(access?.cloudflareClientId||'').trim(),clientSecret:String(access?.cloudflareClientSecret||'').trim()};
+    try{response=await fetch(`${base}/api/devices/pair`,{method:'POST',headers:{'Content-Type':'application/json',...cloudflareHeaders(cf)},body:JSON.stringify({key:cleanKey,deviceName:os.hostname(),os:process.platform,appVersion:app.getVersion()}),signal:AbortSignal.timeout(15000),redirect:'error'})}
     catch{throw new Error(`Không tới được ${base}. Máy này cần truy cập được địa chỉ trong mã; 127.0.0.1 chỉ dùng trên Mac mini.`)}
     const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Kết nối thất bại (${response.status})`);
     if(!data.deviceToken||data.serverUrl!==base||!data.worker?.worker_key)throw new Error('Máy chủ trả về phiên kết nối không hợp lệ');
-    saveDeviceToken(data.deviceToken);
+    saveCloudflareCredentials(cf.clientId,cf.clientSecret);saveDeviceToken(data.deviceToken);
     const next={...getSettings(),serverUrl:base,workerKey:data.worker.worker_key,deviceName:data.worker.device_name,deviceOs:process.platform};
     fs.writeFileSync(settingsFile,JSON.stringify(next,null,2));
     worker.env=backendEnv(4311);if(next.startWorker&&worker.owner!=='external')worker.restart().catch(error=>writeLog('DESKTOP',`Worker: ${error.message}`));
@@ -125,7 +140,7 @@ function registerIpc(){
     if(!/^[A-Za-z0-9_-]{1,120}$/.test(String(profileKey||'')))throw new Error('Mã phiên không hợp lệ');
     const settings=getSettings();const token=getDeviceToken();
     if(!token)throw new Error('Hãy đăng ký thiết bị trước khi đăng nhập Facebook');
-    const response=await fetch(`${settings.serverUrl.replace(/\/$/,'')}/api/accounts`,{headers:{'x-device-token':token},signal:AbortSignal.timeout(5000)});
+    const response=await fetch(`${settings.serverUrl.replace(/\/$/,'')}/api/accounts`,{headers:{...cloudflareHeaders(),'x-device-token':token},signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw new Error(`Central API từ chối kiểm tra tài khoản (${response.status})`);
     const account=(await response.json()).find(item=>item.profile_key===profileKey);
     if(!account)throw new Error('Tài khoản chưa được lưu trong SIMI');
@@ -148,7 +163,7 @@ function registerIpc(){
     const {closeAndSaveLoginSession}=await import(pathToFileURL(modulePath).href);
     const status=await closeAndSaveLoginSession(session);
     let serverUpdated=false;
-    try{const response=await fetch(`${getSettings().serverUrl.replace(/\/$/,'')}/api/automation/account-status`,{method:'POST',headers:{'Content-Type':'application/json','x-device-token':getDeviceToken()},body:JSON.stringify({profileKey:session.profileKey,status})});if(!response.ok)throw new Error(`HTTP ${response.status}`);serverUpdated=true}catch(error){writeLog('DESKTOP',`Cập nhật phiên thất bại: ${error.message}`)}
+    try{const response=await fetch(`${getSettings().serverUrl.replace(/\/$/,'')}/api/automation/account-status`,{method:'POST',headers:{'Content-Type':'application/json',...cloudflareHeaders(),'x-device-token':getDeviceToken()},body:JSON.stringify({profileKey:session.profileKey,status})});if(!response.ok)throw new Error(`HTTP ${response.status}`);serverUpdated=true}catch(error){writeLog('DESKTOP',`Cập nhật phiên thất bại: ${error.message}`)}
     if(loginWorkerWasRunning)worker.start();
     return {profileKey:session.profileKey,status,serverUpdated};
   });
@@ -162,6 +177,7 @@ app.whenReady().then(async()=>{
     app,
     getServerUrl:()=>getSettings().serverUrl,
     getDeviceToken,
+    getAccessHeaders:cloudflareHeaders,
     onStatus:status=>window?.webContents.send('simi:update:status-changed',status)
   });
   registerIpc();createWindow();
