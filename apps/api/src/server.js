@@ -324,7 +324,7 @@ app.patch('/api/accounts/:id/worker',async(req,res)=>{
   const workerId=req.body?.workerId===null||req.body?.workerId===''?null:n(req.body?.workerId,0);
   if(workerId!==null){const [[w]]=await pool.query('SELECT id FROM worker_nodes WHERE id=? AND is_enabled=1',[workerId]);if(!w)return err(res,400,'Worker không tồn tại hoặc đang tắt');}
   const [r]=await pool.query('UPDATE fb_accounts SET assigned_worker_id=? WHERE id=?',[workerId,n(req.params.id)]);if(!r.affectedRows)return err(res,404,'Không tìm thấy tài khoản');
-  await pool.query('UPDATE comment_jobs j JOIN fb_accounts a ON a.id=j.account_id SET j.assigned_worker_id=? WHERE j.account_id=? AND j.status IN (\'PENDING\',\'RETRY_DUE\')',[workerId,n(req.params.id)]);
+  await pool.query('UPDATE comment_jobs j JOIN fb_accounts a ON a.id=j.account_id SET j.assigned_worker_id=? WHERE j.account_id=? AND j.status IN (\'PENDING\',\'RETRY_DUE\',\'READY_FOR_WORKER\')',[workerId,n(req.params.id)]);
   res.json({ok:true,assignedWorkerId:workerId});
 });
 
@@ -542,7 +542,7 @@ app.post('/api/worker/jobs/claim-next', requireDevice, async (req,res) => {
   const conn=await pool.getConnection();
   try {
     await conn.beginTransaction();
-    const [[worker]]=await conn.query("SELECT * FROM worker_nodes WHERE id=? AND is_enabled=1 AND health_status='ONLINE' FOR UPDATE",[req.device.worker_id]);
+    const [[worker]]=await conn.query("SELECT * FROM worker_nodes WHERE id=? AND is_enabled=1 AND health_status='ONLINE' AND current_job_id IS NULL FOR UPDATE",[req.device.worker_id]);
     if(!worker) { await conn.rollback(); return res.status(204).end(); }
     const [rows]=await conn.query(`SELECT j.id,j.idempotency_key,j.campaign_id,j.post_id,j.account_id,j.comment_text,j.dry_run,j.attempt_count,
       p.post_url,p.label,a.profile_key,a.name account_name,c.name campaign_name,
@@ -614,6 +614,7 @@ app.post('/api/automation/account-status', async (req,res) => {
   const {profileKey,status}=req.body;
   const allowed=['UNKNOWN','READY','SESSION_EXPIRED','CHECKPOINT','DISABLED'];
   if(!profileKey||!allowed.includes(status)) return err(res,400,'invalid profileKey/status');
+  if(req.device){const [[account]]=await pool.query('SELECT assigned_worker_id FROM fb_accounts WHERE profile_key=?',[profileKey]);if(!account||account.assigned_worker_id!==req.device.worker_id)return err(res,403,'Tài khoản chưa được gán cho Worker này');}
   await pool.query('UPDATE fb_accounts SET session_status=?,last_health_at=NOW() WHERE profile_key=?',[status,profileKey]);
   res.json({ok:true});
 });

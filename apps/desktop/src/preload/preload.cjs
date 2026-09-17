@@ -8,11 +8,6 @@ contextBridge.exposeInMainWorld('simiDesktop',Object.freeze({
   saveSettings:settings=>ipcRenderer.invoke('simi:settings:save',settings),
   registerDevice:values=>ipcRenderer.invoke('simi:device:register',values),
   restartWorker:()=>ipcRenderer.invoke('simi:worker:restart'),
-  openN8n:()=>ipcRenderer.invoke('simi:n8n:open'),
-  setupN8nWorkflows:()=>ipcRenderer.invoke('simi:n8n:workflow-setup'),
-  startN8n:()=>ipcRenderer.invoke('simi:n8n:start'),
-  openDocker:()=>ipcRenderer.invoke('simi:docker:open'),
-  openConfigFolder:()=>ipcRenderer.invoke('simi:config:open-folder')
-  ,openFacebookLogin:profileKey=>ipcRenderer.invoke('simi:facebook:open-login',profileKey)
-  ,completeFacebookLogin:()=>ipcRenderer.invoke('simi:facebook:complete-login')
+  openFacebookLogin:profileKey=>ipcRenderer.invoke('simi:facebook:open-login',profileKey),
+  completeFacebookLogin:()=>ipcRenderer.invoke('simi:facebook:complete-login')
 }));
