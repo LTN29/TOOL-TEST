@@ -5,6 +5,7 @@ const {ManagedService}=require('./process-manager.cjs');
 const {createUpdateManager}=require('./update-manager.cjs');
 const {pathToFileURL}=require('node:url');
 const os=require('node:os');
+const crypto=require('node:crypto');
 
 if(!app.requestSingleInstanceLock()){app.quit();process.exit(0)}
 const isDev=!app.isPackaged;
@@ -87,6 +88,27 @@ function createWindow(){
   window.on('close',event=>{if(!quitting&&getSettings().continueOnClose){event.preventDefault();window.hide();if(process.platform==='darwin')app.dock?.hide()}});
   if(isDev)window.loadURL('http://127.0.0.1:5173');else window.loadFile(path.join(process.resourcesPath,'renderer','index.html'));
 }
+async function openFacebookLogin(profileKey){
+  if(loginSession)throw new Error('Đang có phiên đăng nhập Facebook khác');
+  if(!/^[A-Za-z0-9_-]{1,120}$/.test(String(profileKey||'')))throw new Error('Mã phiên không hợp lệ');
+  const settings=getSettings(),token=getDeviceToken();
+  if(!token)throw new Error('Hãy đăng ký thiết bị trước khi đăng nhập Facebook');
+  const response=await fetch(`${settings.serverUrl.replace(/\/$/,'')}/api/accounts`,{headers:{...cloudflareHeaders(),'x-device-token':token},signal:AbortSignal.timeout(5000)});
+  if(!response.ok)throw new Error(`Central API từ chối kiểm tra tài khoản (${response.status})`);
+  const account=(await response.json()).find(item=>item.profile_key===profileKey);
+  if(!account)throw new Error('Tài khoản chưa được lưu trong SIMI');
+  if(account.worker_key!==settings.workerKey)throw new Error('Tài khoản này chưa được gán cho máy hiện tại');
+  if(worker.owner==='external')throw new Error('Worker đang chạy ngoài app; hãy dừng Worker đó trước khi đăng nhập');
+  loginWorkerWasRunning=worker.state==='RUNNING';
+  if(worker.child)worker.stop();
+  try{
+    const modulePath=path.join(backendRoot,'worker','src','profile-login.js');
+    const {openLoginSession}=await import(pathToFileURL(modulePath).href);
+    loginSession=await openLoginSession(profileKey,{profileRoot:path.join(userData,'profiles')});
+    loginSession.profileKey=profileKey;
+    return {opened:true,profileKey,account};
+  }catch(error){if(loginWorkerWasRunning)worker.start();throw error}
+}
 function registerIpc(){
   ipcMain.handle('simi:api',async(_event,requestPath,options={})=>{
     if(typeof requestPath!=='string'||!/^\/api\/[A-Za-z0-9_/?=&.%-]+$/.test(requestPath))throw new Error('API path không hợp lệ');
@@ -135,26 +157,24 @@ function registerIpc(){
     return {worker:data.worker,serverUrl:base};
   });
   ipcMain.handle('simi:worker:restart',async()=>{await worker.restart();return worker.snapshot()});
-  ipcMain.handle('simi:facebook:open-login',async(_event,profileKey)=>{
+  ipcMain.handle('simi:facebook:open-login',(_event,profileKey)=>openFacebookLogin(profileKey));
+  ipcMain.handle('simi:facebook:add-and-login',async()=>{
+    const settings=getSettings(),token=getDeviceToken();
+    if(!token||!settings.workerKey)throw new Error('Hãy kết nối thiết bị trước');
     if(loginSession)throw new Error('Đang có phiên đăng nhập Facebook khác');
-    if(!/^[A-Za-z0-9_-]{1,120}$/.test(String(profileKey||'')))throw new Error('Mã phiên không hợp lệ');
-    const settings=getSettings();const token=getDeviceToken();
-    if(!token)throw new Error('Hãy đăng ký thiết bị trước khi đăng nhập Facebook');
-    const response=await fetch(`${settings.serverUrl.replace(/\/$/,'')}/api/accounts`,{headers:{...cloudflareHeaders(),'x-device-token':token},signal:AbortSignal.timeout(5000)});
-    if(!response.ok)throw new Error(`Central API từ chối kiểm tra tài khoản (${response.status})`);
-    const account=(await response.json()).find(item=>item.profile_key===profileKey);
-    if(!account)throw new Error('Tài khoản chưa được lưu trong SIMI');
-    if(account.worker_key!==settings.workerKey)throw new Error('Tài khoản này chưa được gán cho máy hiện tại');
-    if(worker.owner==='external')throw new Error('Worker đang chạy ngoài app; hãy dừng Worker đó trước khi đăng nhập');
-    loginWorkerWasRunning=worker.state==='RUNNING';
-    if(worker.child)worker.stop();
-    try{
-      const modulePath=path.join(backendRoot,'worker','src','profile-login.js');
-      const {openLoginSession}=await import(pathToFileURL(modulePath).href);
-      loginSession=await openLoginSession(profileKey,{profileRoot:path.join(userData,'profiles')});
-      loginSession.profileKey=profileKey;
-      return {opened:true,profileKey};
-    }catch(error){if(loginWorkerWasRunning)worker.start();throw error}
+    const profileKey=`fb_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+    const headers={'Content-Type':'application/json',...cloudflareHeaders(),'x-device-token':token};
+    const base=settings.serverUrl.replace(/\/$/,'');
+    const created=await fetch(`${base}/api/accounts`,{method:'POST',headers,body:JSON.stringify({name:`Facebook mới ${new Date().toLocaleString('vi-VN')}`,profileKey}),signal:AbortSignal.timeout(10000)});
+    const account=await created.json().catch(()=>({}));
+    if(!created.ok)throw new Error(account.error||`Không tạo được tài khoản (${created.status})`);
+    const workersResponse=await fetch(`${base}/api/workers`,{headers,signal:AbortSignal.timeout(10000)});
+    const workers=await workersResponse.json().catch(()=>[]);
+    const own=workers.find(item=>item.worker_key===settings.workerKey);
+    if(!own)throw new Error('Đã tạo tài khoản nhưng không tìm thấy Worker hiện tại để gán');
+    const assigned=await fetch(`${base}/api/accounts/${account.id}/worker`,{method:'PATCH',headers,body:JSON.stringify({workerId:own.id}),signal:AbortSignal.timeout(10000)});
+    if(!assigned.ok)throw new Error('Đã tạo tài khoản nhưng chưa gán được cho máy này');
+    return openFacebookLogin(profileKey);
   });
   ipcMain.handle('simi:facebook:complete-login',async()=>{
     if(!loginSession)throw new Error('Chưa mở phiên đăng nhập');

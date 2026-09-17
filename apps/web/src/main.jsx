@@ -72,7 +72,7 @@ function Posts({posts,campaigns,accounts,templates,groups,reload,tell}){
  <Panel title="Danh sách bài viết" description="Bài tạm dừng vẫn được lưu; bật lại để tạo lịch."><Table heads={['Bài viết','Chiến dịch','Trạng thái','Số tài khoản','Đã bình luận','Đang chờ','Thao tác']}>{posts.length?posts.map(p=><tr key={p.id}><td><b>{p.label||'Chưa đặt tên'}</b><div className="muted truncate">{p.post_url}</div></td><td>{p.campaign_name}</td><td><Badge value={p.is_enabled?'READY':'PAUSED'} label={p.is_enabled?'Đang bật':'Tạm dừng'}/></td><td>{p.account_count}</td><td>{p.success_count}</td><td>{p.pending_count}</td><td><div className="actions"><a className="icon-btn" href={p.post_url} target="_blank" rel="noreferrer"><ExternalLink size={15}/></a><button className={`tiny ${p.is_enabled?'secondary':''}`} onClick={()=>toggle(p)}>{p.is_enabled?'Tạm dừng':'Bật lại'}</button></div></td></tr>):null}</Table></Panel></>
 }
 
-function Accounts({rows,workers=[],reload,tell}){
+function Accounts({rows,workers=[],reload,tell,desktopMode=false}){
  const [form,setForm]=useState({name:'',profileKey:'',dailyLimitOverride:''});
  async function add(){try{await req('/api/accounts',{method:'POST',body:JSON.stringify(form)});setForm({name:'',profileKey:'',dailyLimitOverride:''});tell('Đã thêm tài khoản Facebook');reload()}catch(e){tell(e.message)}}
  async function toggle(a){try{await req(`/api/accounts/${a.id}`,{method:'PATCH',body:JSON.stringify({isActive:!a.is_active})});reload()}catch(e){tell(e.message)}}
