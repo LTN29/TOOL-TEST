@@ -316,7 +316,7 @@ app.get('/api/workers', async (_req,res) => {
 app.post('/api/workers/heartbeat',requireDevice,async(req,res)=>{
   const currentJob=req.body?.currentJobId||null;
   const defaultDryRun=req.body?.defaultDryRun===undefined?true:asBool(req.body.defaultDryRun);
-  await pool.query("UPDATE worker_nodes SET health_status=IF(is_enabled=1,'ONLINE','DISABLED'),last_seen_at=NOW(),last_health_at=NOW(),current_job_id=?,default_dry_run=? WHERE id=?",[currentJob,defaultDryRun,req.device.worker_id]);
+  await pool.query("UPDATE worker_nodes SET health_status=IF(is_enabled=1,'ONLINE','DISABLED'),last_seen_at=NOW(),last_health_at=NOW(),last_error=NULL,current_job_id=?,default_dry_run=? WHERE id=?",[currentJob,defaultDryRun,req.device.worker_id]);
   const [[worker]]=await pool.query('SELECT id,worker_key,device_name,health_status,is_enabled,current_job_id FROM worker_nodes WHERE id=?',[req.device.worker_id]);
   res.json({ok:true,worker});
 });
