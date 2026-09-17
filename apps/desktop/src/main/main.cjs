@@ -50,7 +50,7 @@ function writeLog(source,message){
   if(logs.length>500)logs.splice(0,logs.length-500);
 }
 function changed(){updateTray();window?.webContents.send('simi:status-changed')}
-function backendEnv(port){const settings=getSettings(),cf=cloudflareCredentials()||{};return {...process.env,PORT:String(port),HOST:'127.0.0.1',PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_BROWSERS_PATH:isDev?(process.env.PLAYWRIGHT_BROWSERS_PATH||''):path.join(process.resourcesPath,'playwright-browsers'),PLAYWRIGHT_CHANNEL:'',DRY_RUN:'true',CENTRAL_API_URL:settings.serverUrl,DEVICE_TOKEN:getDeviceToken(),CF_ACCESS_CLIENT_ID:cf.clientId||'',CF_ACCESS_CLIENT_SECRET:cf.clientSecret||'',WORKER_NAME:settings.workerKey||'desktop-worker'}}
+function backendEnv(port){const settings=getSettings(),cf=cloudflareCredentials()||{};return {...process.env,PORT:String(port),HOST:'127.0.0.1',PROFILE_ROOT:path.join(userData,'profiles'),PLAYWRIGHT_BROWSERS_PATH:isDev?(process.env.PLAYWRIGHT_BROWSERS_PATH||''):path.join(process.resourcesPath,'playwright-browsers'),PLAYWRIGHT_CHANNEL:'',DRY_RUN:'false',CENTRAL_API_URL:settings.serverUrl,DEVICE_TOKEN:getDeviceToken(),CF_ACCESS_CLIENT_ID:cf.clientId||'',CF_ACCESS_CLIENT_SECRET:cf.clientSecret||'',WORKER_NAME:settings.workerKey||'desktop-worker'}}
 function makeServices(){
   worker=new ManagedService({name:'WORKER',port:4311,script:path.join(backendRoot,'worker','src','server.js'),cwd:userData,env:backendEnv(4311),identity:b=>b.ok===true&&typeof b.workerName==='string',onLog:writeLog,onChange:changed});
 }

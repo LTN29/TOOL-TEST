@@ -39,7 +39,33 @@ export function LogsPanel(){
   const [rows,setRows]=useState([]);const [raw,setRaw]=useState(false);const [filter,setFilter]=useState('TẤT CẢ');
   useEffect(()=>{let active=true;const refresh=()=>desktop().getLogs().then(data=>{if(active)setRows(data)}).catch(()=>{});refresh();const timer=setInterval(refresh,2500);return()=>{active=false;clearInterval(timer)}},[]);
   const visible=rows.filter(row=>filter==='TẤT CẢ'||row.source===filter).slice().reverse();
-  return <section className="panel"><div className="panel-head"><div><h2>Nhật ký</h2><p>Log API, Worker và ứng dụng hiện tại. Không chứa mật khẩu Facebook.</p></div><button className="secondary" onClick={()=>setRaw(!raw)}>{raw?'Xem dễ đọc':'Xem log kỹ thuật'}</button></div><div className="log-filters">{['TẤT CẢ','API','WORKER','DESKTOP'].map(name=><button key={name} className={filter===name?'active':''} onClick={()=>setFilter(name)}>{name}</button>)}</div><div className="log-list">{visible.length?visible.map((row,index)=><div key={`${row.at}-${index}`}><time>{fmt(row.at)}</time><b>{row.source}</b><span>{raw?row.message:row.message.replace(/^\[[^\]]+\]\s*/, '')}</span></div>):<p>Chưa có log trong phiên này.</p>}</div></section>;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Nhật ký</h2>
+          <p>Log API, Worker và ứng dụng hiện tại. Không chứa mật khẩu Facebook.</p>
+        </div>
+        <button className="secondary" onClick={() => setRaw(!raw)}>
+          {raw ? 'Xem dễ đọc' : 'Xem log kỹ thuật'}
+        </button>
+      </div>
+      <div className="log-filters">
+        {['TẤT CẢ', 'API', 'WORKER', 'DESKTOP'].map(name => (
+          <button key={name} className={filter === name ? 'active' : ''} onClick={() => setFilter(name)}>{name}</button>
+        ))}
+      </div>
+      <div className="log-terminal">
+        {visible.length ? visible.map((row, index) => (
+          <div key={`${row.at}-${index}`} className="log-row">
+            <time>{fmt(row.at)}</time>
+            <b>{row.source}</b>
+            <span>{raw ? row.message : row.message.replace(/^\[[^\]]+\]\s*/, '')}</span>
+          </div>
+        )) : <p style={{ color: '#64748b' }}>Chưa có log trong phiên này.</p>}
+      </div>
+    </section>
+  );
 }
 
 export function ConnectPanel({onConnected}){
@@ -90,7 +116,47 @@ function UpdatesPanel(){
     catch(error){setUpdate(current=>({...current,phase:'error',message:error.message}))}
   }
   const busy=['checking','downloading'].includes(update?.phase);
-  return <section className="panel"><div className="panel-head"><div><h2>Cập nhật ứng dụng</h2><p>App tự kiểm tra định kỳ. Chỉ tải bộ cài từ Central Server đã đăng ký và xác minh SHA-256 trước khi mở.</p></div><button className="secondary" disabled={busy} onClick={()=>action('checkForUpdates')}><RefreshCw size={15}/>Kiểm tra</button></div><p>Phiên bản đang dùng: <b>{update?.currentVersion||'—'}</b>{update?.latestVersion&&<> · Bản trên máy chủ: <b>{update.latestVersion}</b></>}</p>{update?.message&&<p className="desktop-message" role="status">{update.message}</p>}{update?.phase==='downloading'&&<progress value={update.progress} max="100" aria-label="Tiến độ tải bản cập nhật"/>}<div className="actions">{update?.phase==='available'&&<button onClick={()=>action('downloadUpdate')}>Tải bản mới</button>}{update?.phase==='ready'&&<button onClick={()=>action('openUpdateInstaller')}>Mở bộ cài đã tải</button>}</div><p className="muted">Chỉ cài khi bạn xác nhận. Trên macOS, bộ cài DMG cần mở và thay app thủ công cho đến khi có ký số.</p></section>;
+  
+  if (['available', 'downloading', 'ready'].includes(update?.phase)) {
+    return (
+      <div className="updates-alert">
+        <div>
+          <b>Bản cập nhật mới: {update.latestVersion}</b>
+          <span>{update.message}</span>
+          {update.phase === 'downloading' && (
+            <progress value={update.progress} max="100" aria-label="Tiến độ tải bản cập nhật" />
+          )}
+        </div>
+        <div className="actions">
+          {update.phase === 'available' && <button onClick={() => action('downloadUpdate')} disabled={busy}>Tải bản mới</button>}
+          {update.phase === 'ready' && <button onClick={() => action('openUpdateInstaller')}>Mở bộ cài đã tải</button>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Cập nhật ứng dụng</h2>
+          <p>App tự kiểm tra định kỳ. Chỉ tải bộ cài từ Central Server đã đăng ký và xác minh SHA-256 trước khi mở.</p>
+        </div>
+        <button className="secondary" disabled={busy} onClick={() => action('checkForUpdates')}>
+          <RefreshCw size={15} className={busy ? 'spin' : ''} /> Kiểm tra
+        </button>
+      </div>
+      <p style={{ margin: 0, fontSize: 13, color: '#334155' }}>
+        Phiên bản đang dùng: <b>{update?.currentVersion||'—'}</b>
+      </p>
+      {update?.message && update.phase === 'error' && (
+        <p className="desktop-message" role="status" style={{ background: '#fee2e2', color: '#991b1b' }}>{update.message}</p>
+      )}
+      {update?.message && update.phase !== 'error' && (
+        <p className="muted" style={{ marginTop: 8 }}>{update.message}</p>
+      )}
+    </section>
+  );
 }
 
 export function FacebookDesktop({accounts,children,reload}){

@@ -207,6 +207,11 @@ app.patch('/api/accounts/:id', async (req,res) => {
   if(!r.affectedRows) return err(res,404,'Không tìm thấy tài khoản');
   res.json({ok:true});
 });
+app.delete('/api/accounts/:id', async (req, res) => {
+  const [r] = await pool.query('DELETE FROM fb_accounts WHERE id = ?', [n(req.params.id)]);
+  if (!r.affectedRows) return err(res, 404, 'Không tìm thấy tài khoản');
+  res.status(204).end();
+});
 
 app.get('/api/posts', async (_req,res) => {
   const [rows]=await pool.query(`SELECT p.*,c.name campaign_name,
@@ -234,6 +239,11 @@ app.patch('/api/posts/:id', async (req,res) => {
   const [r]=await pool.query(`UPDATE posts SET ${fields.join(',')} WHERE id=?`,values);
   if(!r.affectedRows) return err(res,404,'Không tìm thấy bài viết');
   res.json({ok:true});
+});
+app.delete('/api/posts/:id', async (req, res) => {
+  const [r] = await pool.query('DELETE FROM posts WHERE id = ?', [n(req.params.id)]);
+  if (!r.affectedRows) return err(res, 404, 'Không tìm thấy bài viết');
+  res.status(204).end();
 });
 app.get('/api/posts/:id/accounts', async (req,res) => {
   const [rows]=await pool.query(`SELECT pa.*,a.name account_name,a.profile_key,a.session_status
